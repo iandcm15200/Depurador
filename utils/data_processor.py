@@ -23,14 +23,13 @@ def _find_column(df: pd.DataFrame, candidates):
     return None
 
 
-def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None) -> pd.DataFrame:
+def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None, start_from_prev_midnight: bool = False) -> pd.DataFrame:
     """
-    Depura el DataFrame del CSV vwCRMLeads segun los requerimientos:
-    - Detecta y parsea PaidDate (variantes)
-    - Filtra últimos `hours` horas (por defecto 24)
-    - Crea 'Nombre Apellido' concatenando Apellido + Nombre
-    - Elimina columnas fuera del set final y duplicados por LEAD
-    - Devuelve columnas finales listas para copiar/pegar
+    Depura el DataFrame del CSV vwCRMLeads.
+    Parámetros adicionales:
+      - hours / days: filtro temporal (por defecto 24 horas).
+      - timestamp_referencia: punto final del filtro (por defecto ahora).
+      - start_from_prev_midnight: si True, ignora `hours` y toma desde la medianoche del día anterior hasta timestamp_referencia.
     """
     try:
         df = df.copy()
@@ -44,46 +43,48 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         # Normalizar nombres de columnas (trim)
         df.columns = [str(c).strip() for c in df.columns]
 
-        # 1) Encontrar columna de PaidDate
+        # Encontrar columna de PaidDate
         paid_candidates = ['PaidDate', 'paiddate', 'paid_date', 'Paid Date', 'FechaPago', 'Fecha Pago', 'paid']
         paid_col = _find_column(df, paid_candidates)
 
         if not paid_col:
-            logger.warning("No se encontró columna PaidDate. Asegúrate que exista una columna con fecha de pago.")
-            return pd.DataFrame()  # devolver vacío para que la UI maneje el caso
+            logger.warning("No se encontró columna PaidDate.")
+            return pd.DataFrame()
 
-        # 2) Parsear PaidDate a datetime
+        # Parsear PaidDate
         df[paid_col] = df[paid_col].replace('', pd.NA)
         try:
             df[paid_col] = pd.to_datetime(df[paid_col], format='%d/%m/%Y %H:%M', errors='coerce')
         except Exception:
             df[paid_col] = pd.to_datetime(df[paid_col], dayfirst=True, errors='coerce')
-
-        # Si demasiados nulos, intentar sin hora
         if df[paid_col].isna().sum() > len(df) * 0.5:
             df[paid_col] = pd.to_datetime(df[paid_col].astype(str).str.split().str[0], dayfirst=True, errors='coerce')
 
-        nulos = df[paid_col].isna().sum()
-        if nulos > 0:
-            logger.warning(f"{nulos} filas con PaidDate inválido (serán descartadas)")
-
-        # Renombrar a 'PaidDate' estándar
+        # Renombrar a 'PaidDate'
         if paid_col != 'PaidDate':
             df.rename(columns={paid_col: 'PaidDate'}, inplace=True)
 
         # Eliminar filas sin PaidDate válido
         df = df[df['PaidDate'].notna()]
 
-        # 3) Aplicar filtro temporal (horas o días)
+        # APLICAR FILTRO TEMPORAL
         antes = len(df)
-        if hours is not None:
-            fecha_limite = timestamp_referencia - timedelta(hours=hours)
-            logger.info(f"Filtrando registros con PaidDate >= {fecha_limite} (últimas {hours} horas)")
-            df = df[df['PaidDate'] >= fecha_limite]
-        elif days is not None:
-            fecha_limite = timestamp_referencia - timedelta(days=days)
-            logger.info(f"Filtrando registros con PaidDate >= {fecha_limite} (últimos {days} días)")
-            df = df[df['PaidDate'] >= fecha_limite]
+        if start_from_prev_midnight:
+            # Desde la medianoche del día anterior hasta timestamp_referencia
+            prev_midnight = (timestamp_referencia - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            fecha_inicio = prev_midnight
+            fecha_fin = timestamp_referencia
+            logger.info(f"📌 Filtrando desde medianoche del día anterior: {fecha_inicio} → {fecha_fin}")
+            df = df[(df['PaidDate'] >= fecha_inicio) & (df['PaidDate'] <= fecha_fin)]
+        else:
+            if hours is not None:
+                fecha_limite = timestamp_referencia - timedelta(hours=hours)
+                logger.info(f"⏰ Filtrando últimas {hours} horas desde {fecha_limite} hasta {timestamp_referencia}")
+                df = df[(df['PaidDate'] >= fecha_limite) & (df['PaidDate'] <= timestamp_referencia)]
+            elif days is not None:
+                fecha_limite = timestamp_referencia - timedelta(days=days)
+                logger.info(f"📆 Filtrando últimos {days} días desde {fecha_limite} hasta {timestamp_referencia}")
+                df = df[(df['PaidDate'] >= fecha_limite) & (df['PaidDate'] <= timestamp_referencia)]
         despues = len(df)
         logger.info(f"Filtro temporal aplicado: {antes} → {despues}")
 
@@ -91,14 +92,13 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
             logger.info("No quedan registros después del filtro temporal.")
             return pd.DataFrame()
 
-        # 4) Crear 'Nombre Apellido' (Apellido + Nombre)
+        # Crear Nombre Apellido (Apellido + Nombre) si es posible
         nombre_col = _find_column(df, ['Nombre', 'nombre', 'name'])
         apellido_col = _find_column(df, ['Apellido', 'apellido', 'last_name', 'lastname', 'apellido_paterno', 'Apellido Paterno'])
         if 'Nombre Apellido' not in df.columns:
             if apellido_col and nombre_col:
                 df['Nombre Apellido'] = (df[apellido_col].fillna('').astype(str).str.strip() + ' ' +
                                          df[nombre_col].fillna('').astype(str).str.strip()).str.strip()
-                logger.info("Creada columna 'Nombre Apellido' (Apellido + Nombre).")
             elif nombre_col:
                 df['Nombre Apellido'] = df[nombre_col].astype(str).str.strip()
             elif apellido_col:
@@ -106,71 +106,50 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
             else:
                 df['Nombre Apellido'] = ''
 
-        # 5) Detectar columna LEAD (id) y normalizar
+        # Normalizar LEAD
         lead_col = _find_column(df, ['LEAD', 'Lead', 'Id', 'ID', 'id'])
         if lead_col:
             df['LEAD'] = df[lead_col].astype(str).str.strip()
         else:
             df['LEAD'] = ''
 
-        # 6) Eliminar duplicados por LEAD
+        # Eliminar duplicados por LEAD
         if 'LEAD' in df.columns and df['LEAD'].astype(str).str.strip().replace('', pd.NA).notna().any():
             antes_dup = len(df)
             df = df.drop_duplicates(subset=['LEAD'], keep='first')
             despues_dup = len(df)
             logger.info(f"Duplicados por LEAD eliminados: {antes_dup - despues_dup}")
-        else:
-            logger.info("No se detectaron LEADs válidos para deduplicar (se omite deduplicación).")
 
-        # 7) Normalizar/renombrar otras columnas (Operador -> Asesor de ventas, Email, Telefono Movil, Programa)
+        # Normalizar otras columnas solicitadas
         operador_col = _find_column(df, ['Operador', 'operador', 'Asesor', 'Asesor de ventas', 'AsesorVentas'])
-        if operador_col:
-            df['Asesor de ventas'] = df[operador_col].astype(str).str.strip()
-        else:
-            df['Asesor de ventas'] = ''
-
+        df['Asesor de ventas'] = df[operador_col].astype(str).str.strip() if operador_col else ''
         email_col = _find_column(df, ['Email', 'email', 'Correo', 'correo'])
-        if email_col:
-            df['Email'] = df[email_col].astype(str).str.strip()
-        else:
-            df['Email'] = ''
-
+        df['Email'] = df[email_col].astype(str).str.strip() if email_col else ''
         telefono_col = _find_column(df, ['Telefono Movil', 'TelefonoMovil', 'Telefono', 'telefono movil', 'telefono_movil', 'movil'])
-        if telefono_col:
-            df['Telefono Movil'] = df[telefono_col].astype(str).str.strip()
-        else:
-            df['Telefono Movil'] = ''
-
+        df['Telefono Movil'] = df[telefono_col].astype(str).str.strip() if telefono_col else ''
         programa_col = _find_column(df, ['Programa', 'programa', 'Plan'])
-        if programa_col:
-            df['Programa'] = df[programa_col].astype(str).str.strip()
-        else:
-            df['Programa'] = ''
+        df['Programa'] = df[programa_col].astype(str).str.strip() if programa_col else ''
 
-        # 8) Columnas finales requeridas
+        # Columnas finales requeridas
         columnas_finales = [
             'Asesor de ventas', 'WEB ID', 'ID', 'NIP', 'LEAD', 'Email',
             'Nombre Apellido', 'Telefono Movil', 'Programa', 'PaidDate',
             'Materias Pagadas', 'Monto de pago', 'Campaña', 'Factura',
             'Correo Anáhuac', 'URL_Lead'
         ]
-
         for col in columnas_finales:
             if col not in df.columns:
                 df[col] = ''
 
-        # 9) Formatear PaidDate como texto DD/MM/YYYY HH:MM
+        # Formatear PaidDate como texto DD/MM/YYYY HH:MM
         df['PaidDate'] = pd.to_datetime(df['PaidDate'], errors='coerce')
         df['PaidDate'] = df['PaidDate'].dt.strftime('%d/%m/%Y %H:%M').fillna('')
 
-        # 10) Construir URL_Lead con la base y el LEAD
+        # Construir URL_Lead
         url_base = "https://apmanager.aplatam.com/admin/Ventas/Consulta/Lead/"
         df['URL_Lead'] = df['LEAD'].apply(lambda x: url_base + str(x).strip() if str(x).strip() != '' else '')
 
-        # 11) Seleccionar SOLO las columnas finales y devolver
-        df_final = df[columnas_finales].copy()
-        df_final = df_final.reset_index(drop=True)
-
+        df_final = df[columnas_finales].reset_index(drop=True)
         logger.info(f"=== DEPURACIÓN COMPLETADA: {len(df_final)} registros ===")
         return df_final
 
@@ -185,26 +164,21 @@ def mapear_columnas(df: pd.DataFrame, url_base: str = "https://apmanager.aplatam
     """
     try:
         df = df.copy()
-
         columnas_finales = [
             'Asesor de ventas', 'WEB ID', 'ID', 'NIP', 'LEAD', 'Email',
             'Nombre Apellido', 'Telefono Movil', 'Programa', 'PaidDate',
             'Materias Pagadas', 'Monto de pago', 'Campaña', 'Factura',
             'Correo Anáhuac', 'URL_Lead'
         ]
-
         for col in columnas_finales:
             if col not in df.columns:
                 df[col] = ''
-
         if 'LEAD' in df.columns:
             df['URL_Lead'] = df['LEAD'].apply(lambda x: url_base + str(x).strip() if str(x).strip() != '' else '')
         else:
             df['URL_Lead'] = ''
-
         df = df[columnas_finales]
         return df
-
     except Exception as e:
         logger.exception("ERROR en mapear_columnas:")
         raise
