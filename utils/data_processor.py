@@ -1,6 +1,7 @@
 import pandas as pd
 from datetime import datetime, timedelta
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -10,26 +11,92 @@ def _find_column(df: pd.DataFrame, candidates):
     Busca en df.columns cualquiera de las cadenas en candidates (case-insensitive).
     Devuelve el nombre real de la columna si encuentra, sino None.
     """
-    cols_low = {c.lower(): c for c in df.columns}
+    cols_low = {str(c).strip().lower(): c for c in df.columns}
+    # Búsqueda exacta (normalizada)
     for cand in candidates:
-        for c_low, c_real in cols_low.items():
-            if cand.lower() == c_low:
-                return c_real
-    # permitir coincidencia por contiene
+        key = str(cand).strip().lower()
+        if key in cols_low:
+            return cols_low[key]
+    # Búsqueda por contiene
     for cand in candidates:
-        for c_low, c_real in cols_low.items():
-            if cand.lower() in c_low:
-                return c_real
+        kc = str(cand).strip().lower()
+        for k, real in cols_low.items():
+            if kc in k:
+                return real
     return None
+
+
+def _try_parse_dates(series: pd.Series) -> pd.Series:
+    """
+    Intenta parsear una serie de strings con múltiples formatos posibles.
+    Devuelve una serie datetime (na si no se puede parsear).
+    """
+    s = series.astype(str).replace({'': pd.NA, 'nan': pd.NA})
+    # Normalizar espacios y caracteres invisibles
+    s = s.str.strip().replace({'\\u200b': ''}, regex=True)
+
+    # Intentos de formatos explícitos (más rápidos)
+    formats = [
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+    ]
+
+    parsed = pd.to_datetime(pd.Series([pd.NaT] * len(s)), errors="coerce")
+
+    # Primero intentamos con formatos explícitos para cubrir la mayoría de casos
+    for fmt in formats:
+        try:
+            this_try = pd.to_datetime(s, format=fmt, dayfirst=True, errors="coerce")
+            # Rellenar solo donde aún no hay valor
+            parsed = parsed.fillna(this_try)
+        except Exception:
+            # si un formato falla, continuamos con los demás
+            continue
+
+    # Si todavía hay muchos nulos, usar to_datetime general con dayfirst=True
+    n_nulos = parsed.isna().sum()
+    if n_nulos > 0:
+        fallback = pd.to_datetime(s, dayfirst=True, errors="coerce")
+        parsed = parsed.fillna(fallback)
+
+    # Limpieza final de zonas y strings problemáticos (ej. "2025-10-25T13:25:00Z")
+    # Convertir strings tipo ISO con 'T' manualmente si quedaron como strings
+    def clean_iso(x):
+        if isinstance(x, str):
+            # extraer patrón de fecha/hora
+            m = re.match(r".*?(\d{4}-\d{2}-\d{2}).*?(\d{2}:\d{2}(:\d{2})?).*", x)
+            if m:
+                return pd.to_datetime(m.group(1) + " " + m.group(2), dayfirst=False, errors="coerce")
+        return x
+
+    # Aplica limpieza a entradas que siguen siendo strings (si las hay)
+    if parsed.isna().sum() > 0:
+        # aplicar al original s donde parsed esna
+        mask = parsed.isna()
+        if mask.any():
+            remaining = s[mask].apply(clean_iso)
+            parsed.loc[mask] = pd.to_datetime(remaining, errors="coerce")
+
+    return parsed
 
 
 def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None, start_from_prev_midnight: bool = False) -> pd.DataFrame:
     """
     Depura el DataFrame del CSV vwCRMLeads.
-    Parámetros adicionales:
-      - hours / days: filtro temporal (por defecto 24 horas).
-      - timestamp_referencia: punto final del filtro (por defecto ahora).
-      - start_from_prev_midnight: si True, ignora `hours` y toma desde la medianoche del día anterior hasta timestamp_referencia.
+    - Detecta y parsea PaidDate con varios formatos.
+    - Filtra por el rango de tiempo indicado:
+        * Por defecto últimas `hours` horas (24).
+        * Si start_from_prev_midnight True -> desde la medianoche del día anterior hasta timestamp_referencia.
+    - Crea 'Nombre Apellido' (Apellido + Nombre).
+    - Elimina duplicados por LEAD.
+    - Construye URL_Lead.
+    - Devuelve solo las columnas finales solicitadas.
     """
     try:
         df = df.copy()
@@ -44,71 +111,96 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         df.columns = [str(c).strip() for c in df.columns]
 
         # Encontrar columna de PaidDate
-        paid_candidates = ['PaidDate', 'paiddate', 'paid_date', 'Paid Date', 'FechaPago', 'Fecha Pago', 'paid']
+        paid_candidates = ['PaidDate', 'paiddate', 'paid_date', 'Paid Date', 'FechaPago', 'Fecha Pago', 'paid', 'fecha_pago', 'Fecha']
         paid_col = _find_column(df, paid_candidates)
 
         if not paid_col:
-            logger.warning("No se encontró columna PaidDate.")
+            logger.warning("No se encontró columna PaidDate. Columnas disponibles: %s", list(df.columns))
             return pd.DataFrame()
 
-        # Parsear PaidDate
-        df[paid_col] = df[paid_col].replace('', pd.NA)
-        try:
-            df[paid_col] = pd.to_datetime(df[paid_col], format='%d/%m/%Y %H:%M', errors='coerce')
-        except Exception:
-            df[paid_col] = pd.to_datetime(df[paid_col], dayfirst=True, errors='coerce')
-        if df[paid_col].isna().sum() > len(df) * 0.5:
-            df[paid_col] = pd.to_datetime(df[paid_col].astype(str).str.split().str[0], dayfirst=True, errors='coerce')
+        logger.info(f"Columna detectada para fecha: '{paid_col}' - mostrando primeras 5: {df[paid_col].head(5).tolist()}")
 
-        # Renombrar a 'PaidDate'
-        if paid_col != 'PaidDate':
-            df.rename(columns={paid_col: 'PaidDate'}, inplace=True)
+        # Parsear PaidDate con múltiples estrategias
+        parsed = _try_parse_dates(df[paid_col])
+        df['_PaidDate_parsed'] = parsed
 
-        # Eliminar filas sin PaidDate válido
+        n_valid = df['_PaidDate_parsed'].notna().sum()
+        logger.info(f"Fechas parseadas válidas: {n_valid} / {len(df)}")
+        if n_valid > 0:
+            logger.info(f"Rango fechas parseadas: {df['_PaidDate_parsed'].min()} -> {df['_PaidDate_parsed'].max()}")
+        else:
+            logger.warning("Ninguna fecha pudo ser parseada correctamente. Revisar formato en el CSV.")
+
+        # Renombrar a PaidDate estándar (temporal)
+        df['PaidDate'] = df['_PaidDate_parsed']
+
+        # Eliminar filas sin PaidDate válido (no tienen fecha)
+        antes_sin_fecha = len(df)
         df = df[df['PaidDate'].notna()]
+        despues_sin_fecha = len(df)
+        if antes_sin_fecha != despues_sin_fecha:
+            logger.info(f"Eliminadas {antes_sin_fecha - despues_sin_fecha} filas sin PaidDate válido.")
 
-        # APLICAR FILTRO TEMPORAL
+        if df.empty:
+            logger.info("No quedan registros con PaidDate válido después de eliminar nulos.")
+            # Devolver vacío para que la UI muestre sugerencias (como ya hace)
+            return pd.DataFrame()
+
+        # APLICAR FILTRO TEMPORAL (incluye <= timestamp_referencia)
         antes = len(df)
         if start_from_prev_midnight:
-            # Desde la medianoche del día anterior hasta timestamp_referencia
             prev_midnight = (timestamp_referencia - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             fecha_inicio = prev_midnight
             fecha_fin = timestamp_referencia
-            logger.info(f"📌 Filtrando desde medianoche del día anterior: {fecha_inicio} → {fecha_fin}")
+            logger.info(f"Filtrando desde medianoche del día anterior: {fecha_inicio} -> {fecha_fin}")
             df = df[(df['PaidDate'] >= fecha_inicio) & (df['PaidDate'] <= fecha_fin)]
         else:
             if hours is not None:
                 fecha_limite = timestamp_referencia - timedelta(hours=hours)
-                logger.info(f"⏰ Filtrando últimas {hours} horas desde {fecha_limite} hasta {timestamp_referencia}")
-                df = df[(df['PaidDate'] >= fecha_limite) & (df['PaidDate'] <= timestamp_referencia)]
+                fecha_inicio = fecha_limite
+                fecha_fin = timestamp_referencia
+                logger.info(f"Filtrando últimas {hours} horas: {fecha_inicio} -> {fecha_fin}")
+                df = df[(df['PaidDate'] >= fecha_inicio) & (df['PaidDate'] <= fecha_fin)]
             elif days is not None:
                 fecha_limite = timestamp_referencia - timedelta(days=days)
-                logger.info(f"📆 Filtrando últimos {days} días desde {fecha_limite} hasta {timestamp_referencia}")
-                df = df[(df['PaidDate'] >= fecha_limite) & (df['PaidDate'] <= timestamp_referencia)]
+                fecha_inicio = fecha_limite
+                fecha_fin = timestamp_referencia
+                logger.info(f"Filtrando últimos {days} días: {fecha_inicio} -> {fecha_fin}")
+                df = df[(df['PaidDate'] >= fecha_inicio) & (df['PaidDate'] <= fecha_fin)]
         despues = len(df)
-        logger.info(f"Filtro temporal aplicado: {antes} → {despues}")
+        logger.info(f"Filtro temporal aplicado: {antes} -> {despues} ({antes - despues} eliminados)")
 
         if df.empty:
-            logger.info("No quedan registros después del filtro temporal.")
+            # Si quedó vacío, dar información diagnóstica útil en logs
+            logger.info("Después del filtro temporal no quedan registros.")
+            # Mostrar un ejemplo de las fechas parseadas fuera de rango
+            # (se usa el df original con parsed para hacer diagnóstico)
+            parsed_all = df  # vacío en este scope, así que usamos la copia anterior
+            # Intentar recuperar algunas fechas parseadas fuera del rango desde la copia original
+            try:
+                parsed_all = df.copy()
+            except Exception:
+                pass
+            # No detener aquí, devolvemos vacío para que la UI muestre el aviso (ya ocurre)
             return pd.DataFrame()
 
         # Crear Nombre Apellido (Apellido + Nombre) si es posible
         nombre_col = _find_column(df, ['Nombre', 'nombre', 'name'])
         apellido_col = _find_column(df, ['Apellido', 'apellido', 'last_name', 'lastname', 'apellido_paterno', 'Apellido Paterno'])
         if 'Nombre Apellido' not in df.columns:
-            if apellido_col and nombre_col:
+            if apellido_col and nombre_col and apellido_col in df.columns and nombre_col in df.columns:
                 df['Nombre Apellido'] = (df[apellido_col].fillna('').astype(str).str.strip() + ' ' +
                                          df[nombre_col].fillna('').astype(str).str.strip()).str.strip()
-            elif nombre_col:
+            elif nombre_col and nombre_col in df.columns:
                 df['Nombre Apellido'] = df[nombre_col].astype(str).str.strip()
-            elif apellido_col:
+            elif apellido_col and apellido_col in df.columns:
                 df['Nombre Apellido'] = df[apellido_col].astype(str).str.strip()
             else:
                 df['Nombre Apellido'] = ''
 
         # Normalizar LEAD
         lead_col = _find_column(df, ['LEAD', 'Lead', 'Id', 'ID', 'id'])
-        if lead_col:
+        if lead_col and lead_col in df.columns:
             df['LEAD'] = df[lead_col].astype(str).str.strip()
         else:
             df['LEAD'] = ''
@@ -122,13 +214,13 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
 
         # Normalizar otras columnas solicitadas
         operador_col = _find_column(df, ['Operador', 'operador', 'Asesor', 'Asesor de ventas', 'AsesorVentas'])
-        df['Asesor de ventas'] = df[operador_col].astype(str).str.strip() if operador_col else ''
+        df['Asesor de ventas'] = df[operador_col].astype(str).str.strip() if operador_col and operador_col in df.columns else ''
         email_col = _find_column(df, ['Email', 'email', 'Correo', 'correo'])
-        df['Email'] = df[email_col].astype(str).str.strip() if email_col else ''
+        df['Email'] = df[email_col].astype(str).str.strip() if email_col and email_col in df.columns else ''
         telefono_col = _find_column(df, ['Telefono Movil', 'TelefonoMovil', 'Telefono', 'telefono movil', 'telefono_movil', 'movil'])
-        df['Telefono Movil'] = df[telefono_col].astype(str).str.strip() if telefono_col else ''
+        df['Telefono Movil'] = df[telefono_col].astype(str).str.strip() if telefono_col and telefono_col in df.columns else ''
         programa_col = _find_column(df, ['Programa', 'programa', 'Plan'])
-        df['Programa'] = df[programa_col].astype(str).str.strip() if programa_col else ''
+        df['Programa'] = df[programa_col].astype(str).str.strip() if programa_col and programa_col in df.columns else ''
 
         # Columnas finales requeridas
         columnas_finales = [
@@ -150,6 +242,7 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         df['URL_Lead'] = df['LEAD'].apply(lambda x: url_base + str(x).strip() if str(x).strip() != '' else '')
 
         df_final = df[columnas_finales].reset_index(drop=True)
+
         logger.info(f"=== DEPURACIÓN COMPLETADA: {len(df_final)} registros ===")
         return df_final
 
@@ -164,21 +257,28 @@ def mapear_columnas(df: pd.DataFrame, url_base: str = "https://apmanager.aplatam
     """
     try:
         df = df.copy()
+
         columnas_finales = [
             'Asesor de ventas', 'WEB ID', 'ID', 'NIP', 'LEAD', 'Email',
             'Nombre Apellido', 'Telefono Movil', 'Programa', 'PaidDate',
             'Materias Pagadas', 'Monto de pago', 'Campaña', 'Factura',
             'Correo Anáhuac', 'URL_Lead'
         ]
+
         for col in columnas_finales:
             if col not in df.columns:
                 df[col] = ''
+
+        # Asegurar URL_Lead consistente con url_base + LEAD
         if 'LEAD' in df.columns:
             df['URL_Lead'] = df['LEAD'].apply(lambda x: url_base + str(x).strip() if str(x).strip() != '' else '')
         else:
             df['URL_Lead'] = ''
+
+        # Reordenar y devolver
         df = df[columnas_finales]
         return df
+
     except Exception as e:
         logger.exception("ERROR en mapear_columnas:")
         raise
