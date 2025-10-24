@@ -94,6 +94,7 @@ def main():
                         df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga)
                 except Exception as e:
                     st.error(f"❌ Error durante la depuración: {e}")
+                    st.exception(e)
                     st.stop()
             
             if df_depurado is None or df_depurado.empty:
@@ -166,6 +167,7 @@ def main():
                     
                 except Exception as e:
                     st.error(f"❌ Error al mapear columnas: {e}")
+                    st.exception(e)
                     st.stop()
 
                 # Botón para consolidar en Excel Maestro
@@ -175,4 +177,100 @@ def main():
                 if st.button("🚀 Consolidar en Excel Maestro", type="primary"):
                     with st.spinner("📝 Consolidando en archivo maestro..."):
                         try:
-                            added, moved_rezagados = a
+                            added, moved_rezagados = actualizar_maestro(df_mapeado, archivo_maestro, periodo)
+                        except Exception as e:
+                            st.error(f"❌ Error al consolidar: {e}")
+                            st.exception(e)
+                            st.stop()
+                    
+                    st.success(f"✅ **Consolidación completada!**")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Registros añadidos", added)
+                    with col2:
+                        st.metric("Rezagados movidos", moved_rezagados)
+                    
+                    st.info(f"💾 Archivo maestro guardado en: `{archivo_maestro}`")
+                    
+                    # Guardar historial
+                    info_depuracion = {
+                        'timestamp': timestamp_carga.strftime('%Y-%m-%d %H:%M:%S'),
+                        'archivo': uploaded_file.name,
+                        'filas_originales': total_filas_originales,
+                        'filas_depuradas': filas_depuradas,
+                        'filas_agregadas': added,
+                        'rezagados_movidos': moved_rezagados,
+                        'filtro_horas': rango_horas if rango_dias is None else None,
+                        'filtro_dias': rango_dias,
+                        'periodo': periodo
+                    }
+                    guardar_historial(info_depuracion, HISTORY_DIR)
+                    st.success("📊 Historial actualizado")
+
+    with tab2:
+        st.header("📊 Dashboard rápido")
+        st.write("Carga el archivo maestro para ver conteos por hoja.")
+        
+        if st.button("🔍 Cargar estadísticas del maestro"):
+            try:
+                sheets = cargar_archivo_maestro(archivo_maestro)
+                
+                if not sheets:
+                    st.warning("No se encontró el archivo maestro o está vacío")
+                else:
+                    st.success(f"✅ Archivo maestro cargado: {len(sheets)} hojas detectadas")
+                    
+                    # Crear tabla resumen
+                    resumen_data = []
+                    for name, df in sheets.items():
+                        resumen_data.append({
+                            'Hoja': name,
+                            'Registros': len(df),
+                            'Columnas': len(df.columns)
+                        })
+                    
+                    df_resumen = pd.DataFrame(resumen_data)
+                    st.dataframe(df_resumen, use_container_width=True)
+                    
+                    # Gráfico
+                    if not df_resumen.empty:
+                        st.subheader("📊 Distribución de Registros")
+                        st.bar_chart(df_resumen.set_index('Hoja')['Registros'])
+                        
+            except Exception as e:
+                st.error(f"❌ Error cargando maestro: {e}")
+                st.exception(e)
+
+    with tab3:
+        st.header("🔄 Gestión manual de Rezagados")
+        st.write("Puedes forzar la ejecución del proceso de detección/movimiento de rezagados en el maestro.")
+        
+        if st.button("🔍 Ejecutar mover rezagados ahora", type="primary"):
+            try:
+                # Cargar hojas
+                sheets = cargar_archivo_maestro(archivo_maestro)
+                if not sheets:
+                    st.warning("No se encontró el archivo maestro")
+                else:
+                    # Llamamos a actualizar_maestro con df vacío para forzar la gestión de rezagados
+                    added, moved = actualizar_maestro(pd.DataFrame(), archivo_maestro, periodo, only_manage_rezagados=True)
+                    st.success(f"✅ Rezagados movidos: **{moved}**")
+            except Exception as e:
+                st.error(f"❌ Error moviendo rezagados: {e}")
+                st.exception(e)
+
+    with tab4:
+        st.header("📈 Historial de Depuraciones")
+        st.write("Registro histórico de todas las depuraciones realizadas")
+        
+        # Cargar y mostrar historial
+        historial = cargar_historial(HISTORY_DIR)
+        
+        if historial:
+            mostrar_estadisticas(historial)
+        else:
+            st.info("📭 No hay historial de depuraciones aún")
+
+if __name__ == "__main__":
+    main()
