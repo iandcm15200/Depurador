@@ -1,0 +1,2 @@
+# Este archivo mantiene la carpeta data/ en el repositorio
+# Git ignora carpetas vacías, este archivo asegura que la carpeta exista
