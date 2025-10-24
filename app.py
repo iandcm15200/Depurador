@@ -31,18 +31,18 @@ def main():
         archivo_maestro = st.text_input("Ruta archivo maestro (Excel)", value=DEFAULT_MAESTRO)
         st.markdown("---")
         st.write("**Filtro de tiempo para PaidDate**")
-        st.info("🕐 Por defecto: últimas 24 horas desde la fecha/hora actual de carga")
+        st.info("🕐 Por defecto: últimas 48 horas desde la fecha/hora actual de carga")
         filtro_personalizado = st.checkbox("Usar filtro personalizado", value=False)
         if filtro_personalizado:
             tipo_filtro = st.radio("Tipo de filtro:", ["Horas", "Días"])
             if tipo_filtro == "Horas":
-                rango_horas = st.number_input("Últimas N horas", min_value=1, value=24)
+                rango_horas = st.number_input("Últimas N horas", min_value=1, value=48)
                 rango_dias = None
             else:
                 rango_dias = st.number_input("Últimos N días", min_value=1, value=1)
                 rango_horas = None
         else:
-            rango_horas = 24
+            rango_horas = 48
             rango_dias = None
         
         st.markdown("---")
@@ -105,7 +105,7 @@ def main():
                 st.info("💡 Sugerencias:")
                 st.write("- Verifica que el CSV tenga la columna **PaidDate**")
                 st.write("- Verifica que las fechas estén en formato: **DD/MM/YYYY HH:MM**")
-                st.write("- Intenta usar un filtro de más días si el filtro de 24h es muy restrictivo")
+                st.write("- Intenta usar un filtro de más días si el filtro de 48h es muy restrictivo")
                 
                 # Guardar historial incluso si está vacío
                 info_depuracion = {
