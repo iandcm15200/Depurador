@@ -1,4 +1,3 @@
-python name=utils/data_processor.py url=https://github.com/iandcm15200/Depurador/blob/95d7d75c963781124bd7d529e77d7d24fa34e442/utils/data_processor.py
 import pandas as pd
 from datetime import datetime, timedelta
 import logging
@@ -26,13 +25,12 @@ def _find_column(df: pd.DataFrame, candidates):
 
 def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None) -> pd.DataFrame:
     """
-    Depura el DataFrame del CSV vwCRMLeads segun los requerimientos del usuario:
-    - Detecta y parsea PaidDate (diferentes variantes)
-    - Filtra últimos `hours` horas (por defecto 24) desde `timestamp_referencia`
-    - Crea la columna 'Nombre Apellido' concatenando Apellido + ' ' + Nombre (si existen)
-    - Elimina columnas que no pertenezcan al set final requerido
-    - Elimina duplicados por LEAD (queda 1 registro por LEAD)
-    - Devuelve el DF listo para mapear columnas finales (o ya con columnas finales)
+    Depura el DataFrame del CSV vwCRMLeads segun los requerimientos:
+    - Detecta y parsea PaidDate (variantes)
+    - Filtra últimos `hours` horas (por defecto 24)
+    - Crea 'Nombre Apellido' concatenando Apellido + Nombre
+    - Elimina columnas fuera del set final y duplicados por LEAD
+    - Devuelve columnas finales listas para copiar/pegar
     """
     try:
         df = df.copy()
@@ -46,16 +44,15 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         # Normalizar nombres de columnas (trim)
         df.columns = [str(c).strip() for c in df.columns]
 
-        # 1) Encontrar columna de PaidDate (busca por nombre exacto o por contiene)
+        # 1) Encontrar columna de PaidDate
         paid_candidates = ['PaidDate', 'paiddate', 'paid_date', 'Paid Date', 'FechaPago', 'Fecha Pago', 'paid']
         paid_col = _find_column(df, paid_candidates)
 
         if not paid_col:
             logger.warning("No se encontró columna PaidDate. Asegúrate que exista una columna con fecha de pago.")
-            return pd.DataFrame()  # devolver vacío para que UI muestre sugerencias
+            return pd.DataFrame()  # devolver vacío para que la UI maneje el caso
 
         # 2) Parsear PaidDate a datetime
-        # Intentar formatos previsibles
         df[paid_col] = df[paid_col].replace('', pd.NA)
         try:
             df[paid_col] = pd.to_datetime(df[paid_col], format='%d/%m/%Y %H:%M', errors='coerce')
@@ -94,7 +91,7 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
             logger.info("No quedan registros después del filtro temporal.")
             return pd.DataFrame()
 
-        # 4) Crear 'Nombre Apellido' concatenando Apellido + ' ' + Nombre (si existen)
+        # 4) Crear 'Nombre Apellido' (Apellido + Nombre)
         nombre_col = _find_column(df, ['Nombre', 'nombre', 'name'])
         apellido_col = _find_column(df, ['Apellido', 'apellido', 'last_name', 'lastname', 'apellido_paterno', 'Apellido Paterno'])
         if 'Nombre Apellido' not in df.columns:
@@ -114,10 +111,9 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         if lead_col:
             df['LEAD'] = df[lead_col].astype(str).str.strip()
         else:
-            # Si no hay LEAD, crear vacía (pero se recomienda tenerla)
             df['LEAD'] = ''
 
-        # 6) Eliminar duplicados por LEAD (quedarse con la primera ocurrencia)
+        # 6) Eliminar duplicados por LEAD
         if 'LEAD' in df.columns and df['LEAD'].astype(str).str.strip().replace('', pd.NA).notna().any():
             antes_dup = len(df)
             df = df.drop_duplicates(subset=['LEAD'], keep='first')
@@ -126,8 +122,7 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         else:
             logger.info("No se detectaron LEADs válidos para deduplicar (se omite deduplicación).")
 
-        # 7) Normalizar/renombrar otras columnas solicitadas (Operador -> Asesor de ventas, Email, Telefono Movil, Programa)
-        # Buscamos variantes comunes
+        # 7) Normalizar/renombrar otras columnas (Operador -> Asesor de ventas, Email, Telefono Movil, Programa)
         operador_col = _find_column(df, ['Operador', 'operador', 'Asesor', 'Asesor de ventas', 'AsesorVentas'])
         if operador_col:
             df['Asesor de ventas'] = df[operador_col].astype(str).str.strip()
@@ -152,8 +147,7 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         else:
             df['Programa'] = ''
 
-        # 8) Otras columnas solicitadas en el output: crear vacías si no existen
-        # Columnas finales requeridas en el orden solicitado por el usuario (y para facilitar copia/pegado)
+        # 8) Columnas finales requeridas
         columnas_finales = [
             'Asesor de ventas', 'WEB ID', 'ID', 'NIP', 'LEAD', 'Email',
             'Nombre Apellido', 'Telefono Movil', 'Programa', 'PaidDate',
@@ -161,12 +155,11 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
             'Correo Anáhuac', 'URL_Lead'
         ]
 
-        # Rellenar columnas que no existan
         for col in columnas_finales:
             if col not in df.columns:
                 df[col] = ''
 
-        # 9) Formatear PaidDate a string legible para copiar/pegar (DD/MM/YYYY HH:MM)
+        # 9) Formatear PaidDate como texto DD/MM/YYYY HH:MM
         df['PaidDate'] = pd.to_datetime(df['PaidDate'], errors='coerce')
         df['PaidDate'] = df['PaidDate'].dt.strftime('%d/%m/%Y %H:%M').fillna('')
 
@@ -176,8 +169,6 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
 
         # 11) Seleccionar SOLO las columnas finales y devolver
         df_final = df[columnas_finales].copy()
-
-        # Reset index
         df_final = df_final.reset_index(drop=True)
 
         logger.info(f"=== DEPURACIÓN COMPLETADA: {len(df_final)} registros ===")
@@ -191,7 +182,6 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
 def mapear_columnas(df: pd.DataFrame, url_base: str = "https://apmanager.aplatam.com/admin/Ventas/Consulta/Lead/") -> pd.DataFrame:
     """
     Asegura que el DataFrame tenga exactamente las columnas finales en el orden esperado.
-    Si recibe el DF ya depurado, esto solo reordena y rellena columnas faltantes.
     """
     try:
         df = df.copy()
@@ -203,18 +193,15 @@ def mapear_columnas(df: pd.DataFrame, url_base: str = "https://apmanager.aplatam
             'Correo Anáhuac', 'URL_Lead'
         ]
 
-        # Asegurar columnas
         for col in columnas_finales:
             if col not in df.columns:
                 df[col] = ''
 
-        # Asegurar URL_Lead consistente con url_base + LEAD
         if 'LEAD' in df.columns:
             df['URL_Lead'] = df['LEAD'].apply(lambda x: url_base + str(x).strip() if str(x).strip() != '' else '')
         else:
             df['URL_Lead'] = ''
 
-        # Reordenar y devolver
         df = df[columnas_finales]
         return df
 
