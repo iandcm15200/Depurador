@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 import logging
 import os
-import json
 
 from utils.data_processor import depurar_datos, mapear_columnas
 from utils.excel_manager import actualizar_maestro, cargar_archivo_maestro
@@ -57,18 +56,19 @@ def main():
         
         col1, col2 = st.columns([2, 1])
         with col1:
-            uploaded_file = st.file_uploader("Subir archivo CSV del CRM", type=["csv"])
+            uploaded_file = st.file_uploader("Subir archivo CSV del CRM (vwCRMLeads)", type=["csv"])
         with col2:
             st.info(f"📅 Fecha/Hora actual:\n{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
         
-        mostrar_preview = st.checkbox("Mostrar vista previa del CSV (primeras filas)", value=True)
+        mostrar_preview = st.checkbox("Mostrar vista previa del CSV original (primeras 10 filas)", value=True)
 
         if uploaded_file is not None:
             try:
                 # Timestamp de carga
                 timestamp_carga = datetime.now()
                 
-                raw_df = pd.read_csv(uploaded_file, dtype=str, keep_default_na=False)
+                # Leer CSV
+                raw_df = pd.read_csv(uploaded_file, dtype=str, keep_default_na=False, encoding='utf-8')
                 total_filas_originales = len(raw_df)
                 
                 st.success(f"✅ Archivo cargado: {uploaded_file.name}")
@@ -79,18 +79,29 @@ def main():
                 st.stop()
 
             if mostrar_preview:
-                st.subheader("Preview del CSV cargado")
-                st.dataframe(raw_df.head(10))
+                st.subheader("👀 Preview del CSV Original")
+                st.dataframe(raw_df.head(10), use_container_width=True)
 
             # Depuración
-            with st.spinner("🔄 Depurando datos..."):
-                if filtro_personalizado and rango_dias is not None:
-                    df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga)
-                else:
-                    df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga)
+            st.markdown("---")
+            st.subheader("🔄 Depurando datos...")
+            
+            with st.spinner("Procesando..."):
+                try:
+                    if filtro_personalizado and rango_dias is not None:
+                        df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga)
+                    else:
+                        df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga)
+                except Exception as e:
+                    st.error(f"❌ Error durante la depuración: {e}")
+                    st.stop()
             
             if df_depurado is None or df_depurado.empty:
                 st.warning("⚠️ No hay registros después de la depuración / filtro de fechas.")
+                st.info("💡 Sugerencias:")
+                st.write("- Verifica que el CSV tenga la columna **PaidDate**")
+                st.write("- Verifica que las fechas estén en formato: **DD/MM/YYYY HH:MM**")
+                st.write("- Intenta usar un filtro de más días si el filtro de 24h es muy restrictivo")
                 
                 # Guardar historial incluso si está vacío
                 info_depuracion = {
@@ -111,6 +122,7 @@ def main():
                 st.success(f"✅ Depuración finalizada: **{filas_depuradas}** registros")
                 
                 # Mostrar estadísticas de depuración
+                st.subheader("📊 Estadísticas de Depuración")
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Filas originales", total_filas_originales)
@@ -118,102 +130,49 @@ def main():
                     st.metric("Filas depuradas", filas_depuradas)
                 with col3:
                     eliminadas = total_filas_originales - filas_depuradas
-                    st.metric("Filas eliminadas", eliminadas, delta=f"-{(eliminadas/total_filas_originales*100):.1f}%")
+                    porcentaje = (eliminadas/total_filas_originales*100) if total_filas_originales > 0 else 0
+                    st.metric("Filas eliminadas", eliminadas, delta=f"-{porcentaje:.1f}%")
                 
-                st.subheader("Datos depurados (mapeo hacia maestro)")
-                df_mapeado = mapear_columnas(df_depurado, url_base=url_base_input)
-                st.dataframe(df_mapeado.head(20))
-
-                # Botón para consolidar
-                if st.button("🚀 Consolidar en Excel Maestro", type="primary"):
-                    with st.spinner("📝 Consolidando en archivo maestro..."):
-                        added, moved_rezagados = actualizar_maestro(df_mapeado, archivo_maestro, periodo)
+                # MAPEAR Y MOSTRAR DATOS DEPURADOS
+                st.markdown("---")
+                st.subheader("✅ Datos Depurados - Formato Base Documentos Anáhuac")
+                st.write(f"**Total registros:** {filas_depuradas}")
+                
+                try:
+                    df_mapeado = mapear_columnas(df_depurado, url_base=url_base_input)
                     
-                    st.success(f"✅ **Consolidación completada!**")
+                    # Mostrar DataFrame completo con scroll
+                    st.dataframe(
+                        df_mapeado,
+                        use_container_width=True,
+                        height=400
+                    )
+                    
+                    # Botón para descargar CSV depurado
+                    csv_depurado = df_mapeado.to_csv(index=False, encoding='utf-8-sig')
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.metric("Registros añadidos", added)
+                        st.download_button(
+                            label="📥 Descargar CSV Depurado",
+                            data=csv_depurado.encode('utf-8-sig'),
+                            file_name=f"depurado_{uploaded_file.name.replace('.csv', '')}_{timestamp_carga.strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            help="Descarga el archivo depurado para copiar a Excel"
+                        )
+                    
                     with col2:
-                        st.metric("Rezagados movidos", moved_rezagados)
+                        st.info("💡 **Tip:** Puedes seleccionar todo en la tabla (Ctrl+A) y copiar (Ctrl+C) para pegar directamente en Excel")
                     
-                    st.info(f"💾 Archivo maestro guardado en: `{archivo_maestro}`")
-                    
-                    # Guardar historial
-                    info_depuracion = {
-                        'timestamp': timestamp_carga.strftime('%Y-%m-%d %H:%M:%S'),
-                        'archivo': uploaded_file.name,
-                        'filas_originales': total_filas_originales,
-                        'filas_depuradas': filas_depuradas,
-                        'filas_agregadas': added,
-                        'rezagados_movidos': moved_rezagados,
-                        'filtro_horas': rango_horas if rango_dias is None else None,
-                        'filtro_dias': rango_dias,
-                        'periodo': periodo
-                    }
-                    guardar_historial(info_depuracion, HISTORY_DIR)
-                    st.success("📊 Historial actualizado")
+                except Exception as e:
+                    st.error(f"❌ Error al mapear columnas: {e}")
+                    st.stop()
 
-    with tab2:
-        st.header("📊 Dashboard rápido")
-        st.write("Carga el archivo maestro para ver conteos por hoja.")
-        
-        if st.button("🔍 Cargar estadísticas del maestro"):
-            try:
-                sheets = cargar_archivo_maestro(archivo_maestro)
+                # Botón para consolidar en Excel Maestro
+                st.markdown("---")
+                st.subheader("💾 Consolidar en Excel Maestro")
                 
-                if not sheets:
-                    st.warning("No se encontró el archivo maestro o está vacío")
-                else:
-                    st.success(f"✅ Archivo maestro cargado: {len(sheets)} hojas detectadas")
-                    
-                    # Crear tabla resumen
-                    resumen_data = []
-                    for name, df in sheets.items():
-                        resumen_data.append({
-                            'Hoja': name,
-                            'Registros': len(df),
-                            'Columnas': len(df.columns)
-                        })
-                    
-                    df_resumen = pd.DataFrame(resumen_data)
-                    st.dataframe(df_resumen, use_container_width=True)
-                    
-                    # Gráfico
-                    if not df_resumen.empty:
-                        st.bar_chart(df_resumen.set_index('Hoja')['Registros'])
-                        
-            except Exception as e:
-                st.error(f"❌ Error cargando maestro: {e}")
-
-    with tab3:
-        st.header("🔄 Gestión manual de Rezagados")
-        st.write("Puedes forzar la ejecución del proceso de detección/movimiento de rezagados en el maestro.")
-        
-        if st.button("🔍 Ejecutar mover rezagados ahora", type="primary"):
-            try:
-                # Cargar hojas
-                sheets = cargar_archivo_maestro(archivo_maestro)
-                if not sheets:
-                    st.warning("No se encontró el archivo maestro")
-                else:
-                    # Llamamos a actualizar_maestro con df vacío para forzar la gestión de rezagados
-                    added, moved = actualizar_maestro(pd.DataFrame(), archivo_maestro, periodo, only_manage_rezagados=True)
-                    st.success(f"✅ Rezagados movidos: **{moved}**")
-            except Exception as e:
-                st.error(f"❌ Error moviendo rezagados: {e}")
-
-    with tab4:
-        st.header("📈 Historial de Depuraciones")
-        st.write("Registro histórico de todas las depuraciones realizadas")
-        
-        # Cargar y mostrar historial
-        historial = cargar_historial(HISTORY_DIR)
-        
-        if historial:
-            mostrar_estadisticas(historial)
-        else:
-            st.info("📭 No hay historial de depuraciones aún")
-
-if __name__ == "__main__":
-    main()
+                if st.button("🚀 Consolidar en Excel Maestro", type="primary"):
+                    with st.spinner("📝 Consolidando en archivo maestro..."):
+                        try:
+                            added, moved_rezagados = a
