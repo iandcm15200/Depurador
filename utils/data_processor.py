@@ -1,7 +1,6 @@
 import pandas as pd
 from datetime import datetime, timedelta
 import logging
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -12,12 +11,12 @@ def _find_column(df: pd.DataFrame, candidates):
     Devuelve el nombre real de la columna si encuentra, sino None.
     """
     cols_low = {str(c).strip().lower(): c for c in df.columns}
-    # Búsqueda exacta (normalizada)
+    # búsqueda exacta normalizada
     for cand in candidates:
         key = str(cand).strip().lower()
         if key in cols_low:
             return cols_low[key]
-    # Búsqueda por contiene
+    # búsqueda por contiene
     for cand in candidates:
         kc = str(cand).strip().lower()
         for k, real in cols_low.items():
@@ -26,154 +25,90 @@ def _find_column(df: pd.DataFrame, candidates):
     return None
 
 
-def _try_parse_dates(series: pd.Series) -> pd.Series:
+def depurar_datos(df: pd.DataFrame, hours: int = 48, days: int = None, timestamp_referencia: datetime = None) -> pd.DataFrame:
     """
-    Intenta parsear una serie de strings con múltiples formatos posibles.
-    Devuelve una serie datetime (na si no se puede parsear).
-    """
-    s = series.astype(str).replace({'': pd.NA, 'nan': pd.NA})
-    # Normalizar espacios y caracteres invisibles
-    s = s.str.strip().replace({'\\u200b': ''}, regex=True)
-
-    # Intentos de formatos explícitos (más rápidos)
-    formats = [
-        "%d/%m/%Y %H:%M:%S",
-        "%d/%m/%Y %H:%M",
-        "%d-%m-%Y %H:%M:%S",
-        "%d-%m-%Y %H:%M",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%d/%m/%Y",
-        "%Y-%m-%d",
-    ]
-
-    parsed = pd.to_datetime(pd.Series([pd.NaT] * len(s)), errors="coerce")
-
-    # Primero intentamos con formatos explícitos para cubrir la mayoría de casos
-    for fmt in formats:
-        try:
-            this_try = pd.to_datetime(s, format=fmt, dayfirst=True, errors="coerce")
-            parsed = parsed.fillna(this_try)
-        except Exception:
-            continue
-
-    # Si todavía hay nulos, usar to_datetime general con dayfirst=True
-    n_nulos = parsed.isna().sum()
-    if n_nulos > 0:
-        fallback = pd.to_datetime(s, dayfirst=True, errors="coerce")
-        parsed = parsed.fillna(fallback)
-
-    # Limpieza final de zonas y strings problemáticos (ej. "2025-10-25T13:25:00Z")
-    def clean_iso(x):
-        if isinstance(x, str):
-            m = re.match(r".*?(\d{4}-\d{2}-\d{2}).*?(\d{2}:\d{2}(:\d{2})?).*", x)
-            if m:
-                return pd.to_datetime(m.group(1) + " " + m.group(2), dayfirst=False, errors="coerce")
-        return x
-
-    if parsed.isna().sum() > 0:
-        mask = parsed.isna()
-        if mask.any():
-            remaining = s[mask].apply(clean_iso)
-            parsed.loc[mask] = pd.to_datetime(remaining, errors="coerce")
-
-    return parsed
-
-
-def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None, start_from_prev_midnight: bool = False) -> pd.DataFrame:
-    """
-    Depura el DataFrame del CSV vwCRMLeads.
-    - Detecta y parsea PaidDate con varios formatos.
-    - Filtra por el rango de tiempo indicado:
-        * Por defecto últimas `hours` horas (24).
-        * Si start_from_prev_midnight True -> desde la medianoche del día anterior hasta timestamp_referencia.
-    - Crea 'Nombre Apellido' (Apellido + Nombre).
-    - Elimina duplicados por LEAD.
-    - Construye URL_Lead.
-    - Devuelve solo las columnas finales solicitadas.
+    Depura el DataFrame del CSV vwCRMLeads:
+    - Detecta y parsea PaidDate (varias variaciones).
+    - Filtra registros que estén dentro de las últimas `hours` horas (por defecto 48)
+      contadas desde `timestamp_referencia` (por defecto ahora).
+    - Crea 'Nombre Apellido' concatenando Apellido + Nombre si es posible.
+    - Elimina duplicados por LEAD (queda la primera ocurrencia).
+    - Devuelve solo las columnas finales solicitadas en el orden esperado.
     """
     try:
         df = df.copy()
         if timestamp_referencia is None:
             timestamp_referencia = datetime.now()
 
-        logger.info(f"=== INICIANDO DEPURACIÓN ===")
+        logger.info("=== INICIANDO DEPURACIÓN ===")
         logger.info(f"Timestamp referencia: {timestamp_referencia}")
         logger.info(f"Filas originales: {len(df)}")
 
         # Normalizar nombres de columnas (trim)
         df.columns = [str(c).strip() for c in df.columns]
 
-        # Encontrar columna de PaidDate
+        # Buscar columna de fecha (PaidDate u otras variantes)
         paid_candidates = ['PaidDate', 'paiddate', 'paid_date', 'Paid Date', 'FechaPago', 'Fecha Pago', 'paid', 'fecha_pago', 'Fecha']
         paid_col = _find_column(df, paid_candidates)
 
         if not paid_col:
-            logger.warning("No se encontró columna PaidDate. Columnas disponibles: %s", list(df.columns))
+            logger.warning("No se encontró columna PaidDate. Asegúrate que el CSV tenga la columna de fecha.")
             return pd.DataFrame()
 
-        logger.info(f"Columna detectada para fecha: '{paid_col}' - mostrando primeras 5: {df[paid_col].head(5).tolist()}")
+        # Normalizar valores vacíos y parsear a datetime
+        df[paid_col] = df[paid_col].replace('', pd.NA)
 
-        # Parsear PaidDate con múltiples estrategias
-        parsed = _try_parse_dates(df[paid_col])
-        df['_PaidDate_parsed'] = parsed
+        # Intentos de parseo: formato esperado DD/MM/YYYY HH:MM, si falla usar dayfirst general
+        df[paid_col] = pd.to_datetime(df[paid_col], format='%d/%m/%Y %H:%M', errors='coerce')
+        # Si muchos nulos, intentar con dayfirst=True como fallback
+        if df[paid_col].isna().sum() > 0:
+            fallback = pd.to_datetime(df[paid_col], dayfirst=True, errors='coerce')
+            df[paid_col] = df[paid_col].fillna(fallback)
 
-        n_valid = df['_PaidDate_parsed'].notna().sum()
-        logger.info(f"Fechas parseadas válidas: {n_valid} / {len(df)}")
-        if n_valid > 0:
-            logger.info(f"Rango fechas parseadas: {df['_PaidDate_parsed'].min()} -> {df['_PaidDate_parsed'].max()}")
-        else:
-            logger.warning("Ninguna fecha pudo ser parseada correctamente. Revisar formato en el CSV.")
+        # Si aún hay muchos nulos, intentar extracciones básicas (solo parte fecha)
+        if df[paid_col].isna().sum() > len(df) * 0.5:
+            df[paid_col] = pd.to_datetime(df[paid_col].astype(str).str.split().str[0], dayfirst=True, errors='coerce')
 
-        # Renombrar a PaidDate estándar (temporal)
-        df['PaidDate'] = df['_PaidDate_parsed']
+        nulos = df[paid_col].isna().sum()
+        if nulos > 0:
+            logger.warning(f"{nulos} filas con PaidDate inválido (serán descartadas)")
 
-        # Eliminar filas sin PaidDate válido (no tienen fecha)
-        antes_sin_fecha = len(df)
+        # Normalizar columna al nombre estándar 'PaidDate' (datetime)
+        if paid_col != 'PaidDate':
+            df.rename(columns={paid_col: 'PaidDate'}, inplace=True)
+
+        # Eliminar filas sin PaidDate válido
         df = df[df['PaidDate'].notna()]
-        despues_sin_fecha = len(df)
-        if antes_sin_fecha != despues_sin_fecha:
-            logger.info(f"Eliminadas {antes_sin_fecha - despues_sin_fecha} filas sin PaidDate válido.")
 
         if df.empty:
-            logger.info("No quedan registros con PaidDate válido después de eliminar nulos.")
+            logger.info("No quedan registros con PaidDate válido tras el parseo.")
             return pd.DataFrame()
 
-        # APLICAR FILTRO TEMPORAL (incluye <= timestamp_referencia)
+        # Aplicar filtro temporal: últimas `hours` horas (por defecto 48) hasta timestamp_referencia
         antes = len(df)
-        if start_from_prev_midnight:
-            prev_midnight = (timestamp_referencia - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            fecha_inicio = prev_midnight
-            fecha_fin = timestamp_referencia
-            logger.info(f"Filtrando desde medianoche del día anterior: {fecha_inicio} -> {fecha_fin}")
-            df = df[(df['PaidDate'] >= fecha_inicio) & (df['PaidDate'] <= fecha_fin)]
-        else:
-            if hours is not None:
-                fecha_limite = timestamp_referencia - timedelta(hours=hours)
-                fecha_inicio = fecha_limite
-                fecha_fin = timestamp_referencia
-                logger.info(f"Filtrando últimas {hours} horas: {fecha_inicio} -> {fecha_fin}")
-                df = df[(df['PaidDate'] >= fecha_inicio) & (df['PaidDate'] <= fecha_fin)]
-            elif days is not None:
-                fecha_limite = timestamp_referencia - timedelta(days=days)
-                fecha_inicio = fecha_limite
-                fecha_fin = timestamp_referencia
-                logger.info(f"Filtrando últimos {days} días: {fecha_inicio} -> {fecha_fin}")
-                df = df[(df['PaidDate'] >= fecha_inicio) & (df['PaidDate'] <= fecha_fin)]
+        if hours is not None:
+            fecha_limite = timestamp_referencia - timedelta(hours=hours)
+            logger.info(f"⏰ Filtrando registros con PaidDate entre {fecha_limite} y {timestamp_referencia} (últimas {hours} horas)")
+            df = df[(df['PaidDate'] >= fecha_limite) & (df['PaidDate'] <= timestamp_referencia)]
+        elif days is not None:
+            fecha_limite = timestamp_referencia - timedelta(days=days)
+            logger.info(f"📆 Filtrando registros con PaidDate >= {fecha_limite} (últimos {days} días)")
+            df = df[(df['PaidDate'] >= fecha_limite) & (df['PaidDate'] <= timestamp_referencia)]
         despues = len(df)
-        logger.info(f"Filtro temporal aplicado: {antes} -> {despues} ({antes - despues} eliminados)")
+        logger.info(f"Filtro temporal aplicado: {antes} → {despues}")
 
         if df.empty:
-            logger.info("Después del filtro temporal no quedan registros.")
+            logger.info("No quedan registros después del filtro temporal.")
             return pd.DataFrame()
 
-        # Crear Nombre Apellido (Apellido + Nombre) si es posible
+        # Crear 'Nombre Apellido' concatenando Apellido + Nombre (si existen)
         nombre_col = _find_column(df, ['Nombre', 'nombre', 'name'])
         apellido_col = _find_column(df, ['Apellido', 'apellido', 'last_name', 'lastname', 'apellido_paterno', 'Apellido Paterno'])
         if 'Nombre Apellido' not in df.columns:
             if apellido_col and nombre_col and apellido_col in df.columns and nombre_col in df.columns:
                 df['Nombre Apellido'] = (df[apellido_col].fillna('').astype(str).str.strip() + ' ' +
                                          df[nombre_col].fillna('').astype(str).str.strip()).str.strip()
+                logger.info("✅ Nombre Apellido creado (Apellido + Nombre).")
             elif nombre_col and nombre_col in df.columns:
                 df['Nombre Apellido'] = df[nombre_col].astype(str).str.strip()
             elif apellido_col and apellido_col in df.columns:
@@ -181,31 +116,35 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
             else:
                 df['Nombre Apellido'] = ''
 
-        # Normalizar LEAD
+        # Detectar y normalizar LEAD
         lead_col = _find_column(df, ['LEAD', 'Lead', 'Id', 'ID', 'id'])
         if lead_col and lead_col in df.columns:
             df['LEAD'] = df[lead_col].astype(str).str.strip()
         else:
             df['LEAD'] = ''
 
-        # Eliminar duplicados por LEAD
+        # Eliminar duplicados por LEAD (primera ocurrencia)
         if 'LEAD' in df.columns and df['LEAD'].astype(str).str.strip().replace('', pd.NA).notna().any():
             antes_dup = len(df)
             df = df.drop_duplicates(subset=['LEAD'], keep='first')
             despues_dup = len(df)
-            logger.info(f"Duplicados por LEAD eliminados: {antes_dup - despues_dup}")
+            if antes_dup != despues_dup:
+                logger.info(f"✅ {antes_dup - despues_dup} duplicados por LEAD eliminados")
 
-        # Normalizar otras columnas solicitadas
+        # Normalizar/renombrar otras columnas solicitadas
         operador_col = _find_column(df, ['Operador', 'operador', 'Asesor', 'Asesor de ventas', 'AsesorVentas'])
         df['Asesor de ventas'] = df[operador_col].astype(str).str.strip() if operador_col and operador_col in df.columns else ''
+
         email_col = _find_column(df, ['Email', 'email', 'Correo', 'correo'])
         df['Email'] = df[email_col].astype(str).str.strip() if email_col and email_col in df.columns else ''
+
         telefono_col = _find_column(df, ['Telefono Movil', 'TelefonoMovil', 'Telefono', 'telefono movil', 'telefono_movil', 'movil'])
         df['Telefono Movil'] = df[telefono_col].astype(str).str.strip() if telefono_col and telefono_col in df.columns else ''
+
         programa_col = _find_column(df, ['Programa', 'programa', 'Plan'])
         df['Programa'] = df[programa_col].astype(str).str.strip() if programa_col and programa_col in df.columns else ''
 
-        # Columnas finales requeridas
+        # Columnas finales requeridas (se crean vacías si no existen)
         columnas_finales = [
             'Asesor de ventas', 'WEB ID', 'ID', 'NIP', 'LEAD', 'Email',
             'Nombre Apellido', 'Telefono Movil', 'Programa', 'PaidDate',
@@ -216,15 +155,16 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
             if col not in df.columns:
                 df[col] = ''
 
-        # Formatear PaidDate como texto DD/MM/YYYY HH:MM
+        # Formatear PaidDate como texto DD/MM/YYYY HH:MM para salida
         df['PaidDate'] = pd.to_datetime(df['PaidDate'], errors='coerce')
         df['PaidDate'] = df['PaidDate'].dt.strftime('%d/%m/%Y %H:%M').fillna('')
 
-        # Construir URL_Lead
+        # Construir URL_Lead con la base y el LEAD
         url_base = "https://apmanager.aplatam.com/admin/Ventas/Consulta/Lead/"
         df['URL_Lead'] = df['LEAD'].apply(lambda x: url_base + str(x).strip() if str(x).strip() != '' else '')
 
-        df_final = df[columnas_finales].reset_index(drop=True)
+        # Seleccionar solo las columnas finales y devolver
+        df_final = df[columnas_finales].copy().reset_index(drop=True)
 
         logger.info(f"=== DEPURACIÓN COMPLETADA: {len(df_final)} registros ===")
         return df_final
@@ -252,13 +192,11 @@ def mapear_columnas(df: pd.DataFrame, url_base: str = "https://apmanager.aplatam
             if col not in df.columns:
                 df[col] = ''
 
-        # Asegurar URL_Lead consistente con url_base + LEAD
         if 'LEAD' in df.columns:
             df['URL_Lead'] = df['LEAD'].apply(lambda x: url_base + str(x).strip() if str(x).strip() != '' else '')
         else:
             df['URL_Lead'] = ''
 
-        # Reordenar y devolver
         df = df[columnas_finales]
         return df
 
