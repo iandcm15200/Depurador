@@ -49,6 +49,9 @@ def main():
         st.write("URL base (se concatena con LEAD)")
         url_base_input = st.text_input("URL base", value=URL_BASE)
 
+        # Nueva opción: iniciar desde medianoche del día anterior
+        start_from_prev_midnight = st.checkbox("Incluir desde medianoche del día anterior (en lugar de últimas N horas)", value=False)
+
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Carga de Datos", "📊 Dashboard", "🔄 Rezagados", "📈 Historial"])
 
     with tab1:
@@ -89,9 +92,9 @@ def main():
             with st.spinner("Procesando..."):
                 try:
                     if filtro_personalizado and rango_dias is not None:
-                        df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga)
+                        df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
                     else:
-                        df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga)
+                        df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
                 except Exception as e:
                     st.error(f"❌ Error durante la depuración: {e}")
                     st.exception(e)
