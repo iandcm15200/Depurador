@@ -1,13 +1,20 @@
-# INSTRUCCIONES:
-# - Si tu app.py ya contiene st.set_page_config(...), pega este bloque **después**
-#   de esa llamada (no llamar set_page_config dos veces).
-# - Coloca depurador_streamlit.py en la misma carpeta (ya lo agregaste).
-# - Este archivo agrega un selector en la sidebar para cambiar a la vista "UDLA maestrías".
-#   Cuando el usuario seleccione esa vista, llamará a depurador_streamlit.render_udla()
-#   y detendrá la ejecución del resto de app.py (st.stop()) para no renderizar la UI actual.
+# app.py - Integración del selector de vistas (Anáhuac / UDLA)
+# NOTA IMPORTANTE:
+# - Si tu app.py original ya contiene st.set_page_config(...), Pega este bloque
+#   justo DESPUÉS de esa llamada para evitar duplicados.
+# - Este archivo llama a depurador_streamlit.render_udla() cuando el usuario
+#   selecciona la vista "UDLA maestrías".
+# - Después del bloque marcado como "ORIGINAL APP CONTENT", debes pegar el
+#   contenido real de tu app.py (la UI actual de Anáhuac). Si ya lo moviste
+#   a otro sitio, deja el placeholder como referencia.
 #
-# Pega el resto del contenido original de tu app.py donde se indica más abajo.
-
+# Pasos:
+# 1) Coloca depurador_streamlit.py en la misma carpeta que app.py (ya lo agregaste).
+# 2) Reemplaza/edita este archivo en tu repo con el contenido siguiente.
+# 3) Si tienes st.set_page_config en el "ORIGINAL APP CONTENT", evita duplicarlo:
+#    solo debe existir una llamada set_page_config en la app.
+#
+# -------------------------
 import streamlit as st
 
 # Importa el módulo que contiene la vista UDLA (depurador_streamlit.render_udla)
@@ -33,18 +40,40 @@ if vista_global == "UDLA maestrías":
 # --------------------------
 # A partir de aquí continúa la ejecución normal de tu app.py (vista Anáhuac).
 # --------------------------
-# Pega aquí el contenido ORIGINAL de tu app.py (todo lo que renderiza la interfaz
-# actual de "Sistema de Carga y Depuración CRM - Maestrías").
+# PEGAR EL CONTENIDO ORIGINAL DE app.py ABIJO DE ESTE COMENTARIO
+# -----------------------------------------------------------------
+# Si ya tienes el contenido original en el archivo actual, asegúrate de:
+#  - No duplicar st.set_page_config (si existe, la llamada debe permanecer donde estaba).
+#  - Mantener las importaciones necesarias (puedes mover importaciones arriba si lo prefieres).
+# -----------------------------------------------------------------
 #
-# Ejemplo (sólo ilustrativo — sustituye con tu código real):
+# --- ORIGINAL APP CONTENT START ---
+#
+# (Pega aquí el contenido original completo de tu app.py que renderiza
+#  la interfaz del "Sistema de Carga y Depuración CRM - Maestrías".)
+#
+# Ejemplo ilustrativo (REMPLAZAR por tu código real):
 #
 # st.set_page_config(page_title="Sistema de Carga y Depuración CRM - Maestrías", layout="wide")
 # st.title("Sistema de Carga y Depuración CRM - Maestrías")
-# ...
+# st.markdown("Sube un CSV, depura, consolida y gestiona rezagados automáticamente.")
 #
-# IMPORTANTE: No olvides eliminar del inicio del contenido original cualquier
-# importación o st.set_page_config duplicada si ya las tienes arriba.
+# with st.sidebar:
+#     st.header("Configuración")
+#     periodo_actual = st.text_input("Periodo Actual", value="202592")
+#     # ... resto de widgets de la sidebar original ...
+#
+# st.subheader("Carga y Procesamiento de Archivos CRM")
+# st.info("Arrastra y suelta tu CSV o usa 'Browse files'.")
+# uploaded = st.file_uploader("Drag and drop file here", type=["csv"])
+# if uploaded:
+#     df = pd.read_csv(uploaded)
+#     st.dataframe(df.head(10))
+#
+# # ... resto de la lógica original ...
+#
+# --- ORIGINAL APP CONTENT END ---
 #
 # --------------------------
-# FIN: pega el resto de tu app.py aquí
+# FIN del archivo app.py
 # --------------------------
