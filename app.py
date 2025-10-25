@@ -1,79 +1,311 @@
-# app.py - Integración del selector de vistas (Anáhuac / UDLA)
-# NOTA IMPORTANTE:
-# - Si tu app.py original ya contiene st.set_page_config(...), Pega este bloque
-#   justo DESPUÉS de esa llamada para evitar duplicados.
-# - Este archivo llama a depurador_streamlit.render_udla() cuando el usuario
-#   selecciona la vista "UDLA maestrías".
-# - Después del bloque marcado como "ORIGINAL APP CONTENT", debes pegar el
-#   contenido real de tu app.py (la UI actual de Anáhuac). Si ya lo moviste
-#   a otro sitio, deja el placeholder como referencia.
-#
-# Pasos:
-# 1) Coloca depurador_streamlit.py en la misma carpeta que app.py (ya lo agregaste).
-# 2) Reemplaza/edita este archivo en tu repo con el contenido siguiente.
-# 3) Si tienes st.set_page_config en el "ORIGINAL APP CONTENT", evita duplicarlo:
-#    solo debe existir una llamada set_page_config en la app.
-#
-# -------------------------
 import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+import logging
+import os
 
-# Importa el módulo que contiene la vista UDLA (depurador_streamlit.render_udla)
-# Asegúrate de que depurador_streamlit.py está en el mismo directorio o en PYTHONPATH.
-import depurador_streamlit as depurador_udla
+from utils.data_processor import depurar_datos, mapear_columnas
+from utils.excel_manager import actualizar_maestro, cargar_archivo_maestro
+from utils.history_manager import guardar_historial, cargar_historial, mostrar_estadisticas
 
-# --- Selector global de vistas (añade en la sidebar) ---
-# Coloca este bloque justo después de set_page_config(...) si tu app lo usa.
-st.sidebar.header("Seleccionar vista")
-vista_global = st.sidebar.radio(
-    "Seleccionar vista:",
-    ["Anáhuac (versión actual)", "UDLA maestrías"],
-    index=0
-)
+# Logging básico
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# Si el usuario elige la vista UDLA, renderizamos solo esa vista y detenemos
-# la ejecución de app.py para evitar que se muestre la UI actual.
-if vista_global == "UDLA maestrías":
-    # Llama a la función que definimos en depurador_streamlit.py
-    depurador_udla.render_udla()
-    st.stop()
+DATA_DIR = "data"
+HISTORY_DIR = "history"
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(HISTORY_DIR, exist_ok=True)
 
-# --------------------------
-# A partir de aquí continúa la ejecución normal de tu app.py (vista Anáhuac).
-# --------------------------
-# PEGAR EL CONTENIDO ORIGINAL DE app.py ABIJO DE ESTE COMENTARIO
-# -----------------------------------------------------------------
-# Si ya tienes el contenido original en el archivo actual, asegúrate de:
-#  - No duplicar st.set_page_config (si existe, la llamada debe permanecer donde estaba).
-#  - Mantener las importaciones necesarias (puedes mover importaciones arriba si lo prefieres).
-# -----------------------------------------------------------------
-#
-# --- ORIGINAL APP CONTENT START ---
-#
-# (Pega aquí el contenido original completo de tu app.py que renderiza
-#  la interfaz del "Sistema de Carga y Depuración CRM - Maestrías".)
-#
-# Ejemplo ilustrativo (REMPLAZAR por tu código real):
-#
-# st.set_page_config(page_title="Sistema de Carga y Depuración CRM - Maestrías", layout="wide")
-# st.title("Sistema de Carga y Depuración CRM - Maestrías")
-# st.markdown("Sube un CSV, depura, consolida y gestiona rezagados automáticamente.")
-#
-# with st.sidebar:
-#     st.header("Configuración")
-#     periodo_actual = st.text_input("Periodo Actual", value="202592")
-#     # ... resto de widgets de la sidebar original ...
-#
-# st.subheader("Carga y Procesamiento de Archivos CRM")
-# st.info("Arrastra y suelta tu CSV o usa 'Browse files'.")
-# uploaded = st.file_uploader("Drag and drop file here", type=["csv"])
-# if uploaded:
-#     df = pd.read_csv(uploaded)
-#     st.dataframe(df.head(10))
-#
-# # ... resto de la lógica original ...
-#
-# --- ORIGINAL APP CONTENT END ---
-#
-# --------------------------
-# FIN del archivo app.py
-# --------------------------
+DEFAULT_MAESTRO = os.path.join(DATA_DIR, "conglomerado_maestrias.xlsx")
+URL_BASE = "https://apmanager.aplatam.com/admin/Ventas/Consulta/Lead/"
+
+def main():
+    st.set_page_config(page_title="Sistema de Carga y Depuración CRM - Maestrías", layout="wide")
+
+    # -----------------------
+    # Selector de vistas (Anáhuac / UDLA)
+    # -----------------------
+    # Nota: depurador_streamlit.py debe exponer una función `render_udla()`
+    # que renderice la UI UDLA sin llamar top-level a st.set_page_config.
+    st.sidebar.header("Seleccionar vista")
+    vista_global = st.sidebar.radio(
+        "Seleccionar vista:",
+        ["Anáhuac (versión actual)", "UDLA maestrías"],
+        index=0
+    )
+
+    if vista_global == "UDLA maestrías":
+        # Importar y ejecutar la vista UDLA solo cuando el usuario la seleccione.
+        # Esto evita que se ejecute (o que set_page_config se llame) si no es necesario.
+        try:
+            import importlib
+            depurador_udla = importlib.import_module("depurador_streamlit")
+            # Espera que depurador_streamlit tenga una función render_udla()
+            if hasattr(depurador_udla, "render_udla"):
+                depurador_udla.render_udla()
+            else:
+                st.error("El módulo depurador_streamlit no expone la función render_udla(). Asegúrate de que depurador_streamlit.py define render_udla().")
+        except Exception as e:
+            st.error(f"Error cargando la vista UDLA: {e}")
+        # Detenemos la ejecución para no renderizar la UI principal (Anáhuac)
+        st.stop()
+
+    # -----------------------
+    # Vista Anáhuac (versión actual) - UI original continúa aquí
+    # -----------------------
+    st.title("🏢 Sistema de Carga y Depuración CRM - Maestrías")
+    st.markdown("Sube un CSV, depura, consolida y gestiona rezagados automáticamente.")
+
+    # Sidebar configuración
+    with st.sidebar:
+        st.header("⚙️ Configuración")
+        periodo = st.text_input("Período Actual", value="202592")
+        archivo_maestro = st.text_input("Ruta archivo maestro (Excel)", value=DEFAULT_MAESTRO)
+        st.markdown("---")
+        st.write("**Filtro de tiempo para PaidDate**")
+        st.info("🕐 Por defecto: últimas 48 horas desde la fecha/hora actual de carga")
+        filtro_personalizado = st.checkbox("Usar filtro personalizado", value=False)
+        if filtro_personalizado:
+            tipo_filtro = st.radio("Tipo de filtro:", ["Horas", "Días"])
+            if tipo_filtro == "Horas":
+                rango_horas = st.number_input("Últimas N horas", min_value=1, value=48)
+                rango_dias = None
+            else:
+                rango_dias = st.number_input("Últimos N días", min_value=1, value=1)
+                rango_horas = None
+        else:
+            rango_horas = 48
+            rango_dias = None
+        
+        st.markdown("---")
+        st.write("URL base (se concatena con LEAD)")
+        url_base_input = st.text_input("URL base", value=URL_BASE)
+
+        # Nueva opción: iniciar desde medianoche del día anterior
+        start_from_prev_midnight = st.checkbox("Incluir desde medianoche del día anterior (en lugar de últimas N horas)", value=False)
+
+    tab1, tab2, tab3, tab4 = st.tabs(["📤 Carga de Datos", "📊 Dashboard", "🔄 Rezagados", "📈 Historial"])
+
+    with tab1:
+        st.header("Carga y Procesamiento de Archivos CRM")
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            uploaded_file = st.file_uploader("Subir archivo CSV del CRM (vwCRMLeads)", type=["csv"])
+        with col2:
+            st.info(f"📅 Fecha/Hora actual:\n{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        
+        mostrar_preview = st.checkbox("Mostrar vista previa del CSV original (primeras 10 filas)", value=True)
+
+        if uploaded_file is not None:
+            try:
+                # Timestamp de carga
+                timestamp_carga = datetime.now()
+                
+                # Leer CSV
+                raw_df = pd.read_csv(uploaded_file, dtype=str, keep_default_na=False, encoding='utf-8')
+                total_filas_originales = len(raw_df)
+                
+                st.success(f"✅ Archivo cargado: {uploaded_file.name}")
+                st.write(f"📊 Total de registros en CSV: **{total_filas_originales}**")
+                
+            except Exception as e:
+                st.error(f"❌ No se pudo leer el CSV: {e}")
+                st.stop()
+
+            if mostrar_preview:
+                st.subheader("👀 Preview del CSV Original")
+                st.dataframe(raw_df.head(10), use_container_width=True)
+
+            # Depuración
+            st.markdown("---")
+            st.subheader("🔄 Depurando datos...")
+            
+            with st.spinner("Procesando..."):
+                try:
+                    if filtro_personalizado and rango_dias is not None:
+                        df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
+                    else:
+                        df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
+                except Exception as e:
+                    st.error(f"❌ Error durante la depuración: {e}")
+                    st.exception(e)
+                    st.stop()
+            
+            if df_depurado is None or df_depurado.empty:
+                st.warning("⚠️ No hay registros después de la depuración / filtro de fechas.")
+                st.info("💡 Sugerencias:")
+                st.write("- Verifica que el CSV tenga la columna **PaidDate**")
+                st.write("- Verifica que las fechas estén en formato: **DD/MM/YYYY HH:MM**")
+                st.write("- Intenta usar un filtro de más días si el filtro de 48h es muy restrictivo")
+                
+                # Guardar historial incluso si está vacío
+                info_depuracion = {
+                    'timestamp': timestamp_carga.strftime('%Y-%m-%d %H:%M:%S'),
+                    'archivo': uploaded_file.name,
+                    'filas_originales': total_filas_originales,
+                    'filas_depuradas': 0,
+                    'filas_agregadas': 0,
+                    'rezagados_movidos': 0,
+                    'filtro_horas': rango_horas if rango_dias is None else None,
+                    'filtro_dias': rango_dias,
+                    'periodo': periodo
+                }
+                guardar_historial(info_depuracion, HISTORY_DIR)
+                
+            else:
+                filas_depuradas = len(df_depurado)
+                st.success(f"✅ Depuración finalizada: **{filas_depuradas}** registros")
+                
+                # Mostrar estadísticas de depuración
+                st.subheader("📊 Estadísticas de Depuración")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Filas originales", total_filas_originales)
+                with col2:
+                    st.metric("Filas depuradas", filas_depuradas)
+                with col3:
+                    eliminadas = total_filas_originales - filas_depuradas
+                    porcentaje = (eliminadas/total_filas_originales*100) if total_filas_originales > 0 else 0
+                    st.metric("Filas eliminadas", eliminadas, delta=f"-{porcentaje:.1f}%")
+                
+                # MAPEAR Y MOSTRAR DATOS DEPURADOS
+                st.markdown("---")
+                st.subheader("✅ Datos Depurados - Formato Base Documentos Anáhuac")
+                st.write(f"**Total registros:** {filas_depuradas}")
+                
+                try:
+                    df_mapeado = mapear_columnas(df_depurado, url_base=url_base_input)
+                    
+                    # Mostrar DataFrame completo con scroll
+                    st.dataframe(
+                        df_mapeado,
+                        use_container_width=True,
+                        height=400
+                    )
+                    
+                    # Botón para descargar CSV depurado
+                    csv_depurado = df_mapeado.to_csv(index=False, encoding='utf-8-sig')
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.download_button(
+                            label="📥 Descargar CSV Depurado",
+                            data=csv_depurado.encode('utf-8-sig'),
+                            file_name=f"depurado_{uploaded_file.name.replace('.csv', '')}_{timestamp_carga.strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            help="Descarga el archivo depurado para copiar a Excel"
+                        )
+                    
+                    with col2:
+                        st.info("💡 **Tip:** Puedes seleccionar todo en la tabla (Ctrl+A) y copiar (Ctrl+C) para pegar directamente en Excel")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error al mapear columnas: {e}")
+                    st.exception(e)
+                    st.stop()
+
+                # Botón para consolidar en Excel Maestro
+                st.markdown("---")
+                st.subheader("💾 Consolidar en Excel Maestro")
+                
+                if st.button("🚀 Consolidar en Excel Maestro", type="primary"):
+                    with st.spinner("📝 Consolidando en archivo maestro..."):
+                        try:
+                            added, moved_rezagados = actualizar_maestro(df_mapeado, archivo_maestro, periodo)
+                        except Exception as e:
+                            st.error(f"❌ Error al consolidar: {e}")
+                            st.exception(e)
+                            st.stop()
+                    
+                    st.success(f"✅ **Consolidación completada!**")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Registros añadidos", added)
+                    with col2:
+                        st.metric("Rezagados movidos", moved_rezagados)
+                    
+                    st.info(f"💾 Archivo maestro guardado en: `{archivo_maestro}`")
+                    
+                    # Guardar historial
+                    info_depuracion = {
+                        'timestamp': timestamp_carga.strftime('%Y-%m-%d %H:%M:%S'),
+                        'archivo': uploaded_file.name,
+                        'filas_originales': total_filas_originales,
+                        'filas_depuradas': filas_depuradas,
+                        'filas_agregadas': added,
+                        'rezagados_movidos': moved_rezagados,
+                        'filtro_horas': rango_horas if rango_dias is None else None,
+                        'filtro_dias': rango_dias,
+                        'periodo': periodo
+                    }
+                    guardar_historial(info_depuracion, HISTORY_DIR)
+                    st.success("📊 Historial actualizado")
+
+    with tab2:
+        st.header("📊 Dashboard rápido")
+        st.write("Carga el archivo maestro para ver conteos por hoja.")
+        
+        if st.button("🔍 Cargar estadísticas del maestro"):
+            try:
+                sheets = cargar_archivo_maestro(archivo_maestro)
+                
+                if not sheets:
+                    st.warning("No se encontró el archivo maestro o está vacío")
+                else:
+                    st.success(f"✅ Archivo maestro cargado: {len(sheets)} hojas detectadas")
+                    
+                    # Crear tabla resumen
+                    resumen_data = []
+                    for name, df in sheets.items():
+                        resumen_data.append({
+                            'Hoja': name,
+                            'Registros': len(df),
+                            'Columnas': len(df.columns)
+                        })
+                    
+                    df_resumen = pd.DataFrame(resumen_data)
+                    st.dataframe(df_resumen, use_container_width=True)
+                    
+                    # Gráfico
+                    if not df_resumen.empty:
+                        st.subheader("📊 Distribución de Registros")
+                        st.bar_chart(df_resumen.set_index('Hoja')['Registros'])
+                        
+            except Exception as e:
+                st.error(f"❌ Error cargando maestro: {e}")
+                st.exception(e)
+
+    with tab3:
+        st.header("🔄 Gestión manual de Rezagados")
+        st.write("Puedes forzar la ejecución del proceso de detección/movimiento de rezagados en el maestro.")
+        
+        if st.button("🔍 Ejecutar mover rezagados ahora", type="primary"):
+            try:
+                # Cargar hojas
+                sheets = cargar_archivo_maestro(archivo_maestro)
+                if not sheets:
+                    st.warning("No se encontró el archivo maestro")
+                else:
+                    # Llamamos a actualizar_maestro con df vacío para forzar la gestión de rezagados
+                    added, moved = actualizar_maestro(pd.DataFrame(), archivo_maestro, periodo, only_manage_rezagados=True)
+                    st.success(f"✅ Rezagados movidos: **{moved}**")
+            except Exception as e:
+                st.error(f"❌ Error moviendo rezagados: {e}")
+                st.exception(e)
+
+    with tab4:
+        st.header("📈 Historial de Depuraciones")
+        st.write("Registro histórico de todas las depuraciones realizadas")
+        
+        # Cargar y mostrar historial
+        historial = cargar_historial(HISTORY_DIR)
+        
+        if historial:
+            mostrar_estadisticas(historial)
+        else:
+            st.info("📭 No hay historial de depuraciones aún")
+
+if __name__ == "__main__":
+    main()
