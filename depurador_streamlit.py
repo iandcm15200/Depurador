@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import io, csv, unicodedata, html
+import io, csv, unicodedata, html, json
 
 # NOTA: eliminé set_page_config y llamadas top-level para que este módulo
 # pueda importarse desde app.py sin interferir con la configuración principal.
@@ -107,25 +107,30 @@ def render_udla():
     tsv_text = out.to_csv(index=False, sep="\t")
     st.download_button("Descargar CSV", data=csv_bytes, file_name="depurado_udla.csv", mime="text/csv")
 
-    copy_html = f'''
-    <button id="copyBtn">Copiar como TSV (pegar en Excel)</button>
-    <script>
-    const tsv = `{tsv_text.replace("`","\\`")}`;
-    document.getElementById('copyBtn').addEventListener('click', function(){ 
-      const ta = document.createElement('textarea');
-      ta.value = tsv;
-      document.body.appendChild(ta);
-      ta.select();
-      try {{
-        document.execCommand('copy');
-        alert('TSV copiado al portapapeles. Pega en Excel (Ctrl+V).');
-      }} catch(e) {{
-        alert('No se pudo copiar automáticamente desde el navegador.');
-      }}
-      document.body.removeChild(ta);
-    });
-    </script>
-    '''
+    # Para evitar problemas de sintaxis por llaves en f-strings, serializamos el TSV a JSON
+    # y concatenamos la cadena JS sin usar f-strings que interpretan { }.
+    tsv_js = json.dumps(tsv_text)  # produce un literal JS/JSON seguro, con comillas y escapado
+
+    copy_html = (
+        "<button id=\"copyBtn\">Copiar como TSV (pegar en Excel)</button>\n"
+        "<script>\n"
+        "const tsv = " + tsv_js + ";\n"
+        "document.getElementById('copyBtn').addEventListener('click', function(){\n"
+        "  const ta = document.createElement('textarea');\n"
+        "  ta.value = tsv;\n"
+        "  document.body.appendChild(ta);\n"
+        "  ta.select();\n"
+        "  try {\n"
+        "    document.execCommand('copy');\n"
+        "    alert('TSV copiado al portapapeles. Pega en Excel (Ctrl+V).');\n"
+        "  } catch(e) {\n"
+        "    alert('No se pudo copiar automáticamente desde el navegador.');\n"
+        "  }\n"
+        "  document.body.removeChild(ta);\n"
+        "});\n"
+        "</script>\n"
+    )
+
     st.components.v1.html(copy_html, height=70)
 
 # Para probar este módulo de forma independiente:
