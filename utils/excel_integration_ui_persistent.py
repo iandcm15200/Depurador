@@ -12,39 +12,15 @@ Funciones principales:
 import streamlit as st
 import pandas as pd
 from typing import Optional
-from .graph_client import GraphClient
 import logging
+import msal
+import os
 
+# NO importar GraphClient - vamos a usar MSAL directamente para evitar conflictos de scopes
 logger = logging.getLogger(__name__)
 
-def connect_with_device_flow_gc(gc: GraphClient) -> bool:
-    """
-    Inicia Device Code Flow y espera a que el usuario complete el login.
-    Muestra el mensaje de Device Code en la UI (flow["message"]).
-    Devuelve True si la autenticación fue exitosa.
-    """
-    try:
-        flow = gc.app.initiate_device_flow(scopes=gc.scopes)
-        if "user_code" not in flow:
-            st.error("No se pudo iniciar Device Flow (respuesta inesperada).")
-            logger.error("Device flow initiation failed: %s", flow)
-            return False
-        # Mostrar mensaje con instrucciones al usuario
-        st.info(flow.get("message", "Sigue las instrucciones para autenticarte en Microsoft."))
-        token = gc.app.acquire_token_by_device_flow(flow)  # polling interno
-        if "access_token" in token:
-            gc.access_token = token["access_token"]
-            st.success("✅ Autenticación completada correctamente.")
-            return True
-        else:
-            st.error("❌ Autenticación fallida. Revisa errores en la consola.")
-            logger.error("Device flow returned no access_token: %s", token)
-            return False
-    except Exception as e:
-        st.error("❌ Error durante Device Code Flow.")
-        st.exception(e)
-        logger.exception("connect_with_device_flow_gc error:")
-        return False
+# ⭐ SCOPES CORRECTOS - Sin offline_access (MSAL lo agrega automáticamente)
+CORRECT_SCOPES = ["Files.ReadWrite", "User.Read"]
 
 def _col_letter(idx: int) -> str:
     """Convierte índice 0->A, 25->Z, 26->AA."""
@@ -61,7 +37,7 @@ def setup_excel_connection_persistent():
     Esta función debe llamarse en la sidebar o al inicio de las vistas de Anáhuac.
     
     Guarda en st.session_state:
-    - excel_gc: instancia de GraphClient autenticado
+    - excel_gc: instancia con access_token
     - excel_share_url: URL del libro conectado
     - excel_sheet_name: nombre de la hoja seleccionada
     - excel_connected: bool que indica si hay conexión activa
@@ -71,8 +47,8 @@ def setup_excel_connection_persistent():
     # Inicializar variables de sesión si no existen
     if "excel_connected" not in st.session_state:
         st.session_state.excel_connected = False
-    if "excel_gc" not in st.session_state:
-        st.session_state.excel_gc = None
+    if "excel_access_token" not in st.session_state:
+        st.session_state.excel_access_token = None
     if "excel_share_url" not in st.session_state:
         st.session_state.excel_share_url = ""
     if "excel_sheet_name" not in st.session_state:
@@ -86,7 +62,7 @@ def setup_excel_connection_persistent():
         # Botón para desconectar
         if st.sidebar.button("🔌 Desconectar y cambiar libro"):
             st.session_state.excel_connected = False
-            st.session_state.excel_gc = None
+            st.session_state.excel_access_token = None
             st.session_state.excel_share_url = ""
             st.session_state.excel_sheet_name = ""
             st.rerun()
@@ -121,13 +97,17 @@ def setup_excel_connection_persistent():
         
         with st.spinner("Conectando a Microsoft Graph..."):
             try:
-                # Crear cliente de Graph
-                gc = GraphClient(client_id=client_id)
+                # ⭐ Crear MSAL app directamente con scopes correctos
+                tenant = os.environ.get("AZURE_TENANT_ID", "common")
+                authority = f"https://login.microsoftonline.com/{tenant}"
+                app = msal.PublicClientApplication(client_id, authority=authority)
                 
-                # Autenticar con Device Code
-                flow = gc.app.initiate_device_flow(scopes=gc.scopes)
+                # ⭐ Iniciar Device Flow CON SCOPES CORRECTOS
+                flow = app.initiate_device_flow(scopes=CORRECT_SCOPES)
+                
                 if "user_code" not in flow:
                     st.sidebar.error("❌ No se pudo iniciar Device Flow")
+                    logger.error("Device flow initiation failed: %s", flow)
                     return
                 
                 # Mostrar código de dispositivo en un expander
@@ -136,26 +116,34 @@ def setup_excel_connection_persistent():
                     st.markdown(flow.get("message", ""))
                 
                 # Esperar autenticación
-                token = gc.app.acquire_token_by_device_flow(flow)
+                token = app.acquire_token_by_device_flow(flow)
                 
                 if "access_token" not in token:
                     st.sidebar.error("❌ Autenticación fallida")
                     logger.error("Device flow returned no access_token: %s", token)
                     return
                 
-                gc.access_token = token["access_token"]
+                access_token = token["access_token"]
+                
+                # Importar GraphClient solo para usar sus métodos de API
+                from .graph_client import GraphClient
+                
+                # Crear cliente temporal solo para listar hojas
+                temp_gc = GraphClient(client_id=client_id, scopes=CORRECT_SCOPES)
+                temp_gc.access_token = access_token
                 
                 # Listar hojas del libro
-                worksheets = gc.get_workbook_worksheets(share_url)
+                worksheets = temp_gc.get_workbook_worksheets(share_url)
                 
                 if not worksheets:
                     st.sidebar.error("❌ No se encontraron hojas en el libro")
                     return
                 
-                # Guardar GraphClient en sesión temporalmente para selección de hoja
-                st.session_state.temp_gc = gc
+                # Guardar temporalmente para selección de hoja
+                st.session_state.temp_access_token = access_token
                 st.session_state.temp_share_url = share_url
                 st.session_state.temp_worksheets = worksheets
+                st.session_state.temp_client_id = client_id
                 st.session_state.show_sheet_selector = True
                 
                 st.rerun()
@@ -178,15 +166,17 @@ def setup_excel_connection_persistent():
         
         if st.sidebar.button("✅ Confirmar hoja", type="primary"):
             # Guardar conexión en session_state
-            st.session_state.excel_gc = st.session_state.temp_gc
+            st.session_state.excel_access_token = st.session_state.temp_access_token
             st.session_state.excel_share_url = st.session_state.temp_share_url
             st.session_state.excel_sheet_name = selected_sheet
+            st.session_state.excel_client_id = st.session_state.temp_client_id
             st.session_state.excel_connected = True
             
             # Limpiar temporales
-            del st.session_state.temp_gc
+            del st.session_state.temp_access_token
             del st.session_state.temp_share_url
             del st.session_state.temp_worksheets
+            del st.session_state.temp_client_id
             del st.session_state.show_sheet_selector
             
             st.sidebar.success(f"✅ Conectado a la hoja: {selected_sheet}")
@@ -219,12 +209,20 @@ def send_to_connected_excel(df_to_append: pd.DataFrame, show_preview: bool = Tru
             st.info(f"Total de filas: {len(df_to_append)}")
     
     # Obtener datos de conexión
-    gc = st.session_state.excel_gc
+    access_token = st.session_state.excel_access_token
     share_url = st.session_state.excel_share_url
     sheet_name = st.session_state.excel_sheet_name
+    client_id = st.session_state.excel_client_id
     
     try:
         with st.spinner(f"📤 Enviando {len(df_to_append)} filas a Excel..."):
+            # Importar GraphClient
+            from .graph_client import GraphClient
+            
+            # Crear cliente con el token guardado
+            gc = GraphClient(client_id=client_id, scopes=CORRECT_SCOPES)
+            gc.access_token = access_token
+            
             # Verificar si existe una tabla en la hoja
             tables = gc.get_worksheet_tables(share_url, sheet_name)
             
@@ -289,23 +287,39 @@ def send_to_connected_excel(df_to_append: pd.DataFrame, show_preview: bool = Tru
         logger.exception("send_to_connected_excel error:")
         return False
 
-# Mantener la función original para compatibilidad (sin cambios)
+# Mantener la función original para compatibilidad (UDLA)
 def integrate_ui_and_append(share_url: str, df_to_append: pd.DataFrame):
     """
     UI helper ORIGINAL para Streamlit (mantener para compatibilidad con UDLA).
     Esta versión NO usa sesión persistente.
     """
+    from .graph_client import GraphClient
+    
     client_id = st.secrets.get("AZURE_CLIENT_ID") or st.sidebar.text_input("AZURE_CLIENT_ID (temporal)")
     if not client_id:
         st.warning("Se requiere AZURE_CLIENT_ID. Defínelo en Streamlit secrets o escríbelo en la caja lateral.")
         return
 
-    gc = GraphClient(client_id=client_id)
+    gc = GraphClient(client_id=client_id, scopes=CORRECT_SCOPES)
 
     # Botón de conexión / Device Code
     if st.button("Conectar a Excel Online (Device Code)"):
-        ok = connect_with_device_flow_gc(gc)
-        if not ok:
+        try:
+            flow = gc.app.initiate_device_flow(scopes=CORRECT_SCOPES)
+            if "user_code" not in flow:
+                st.error("No se pudo iniciar Device Flow (respuesta inesperada).")
+                return
+            st.info(flow.get("message", "Sigue las instrucciones para autenticarte en Microsoft."))
+            token = gc.app.acquire_token_by_device_flow(flow)
+            if "access_token" in token:
+                gc.access_token = token["access_token"]
+                st.success("✅ Autenticación completada correctamente.")
+            else:
+                st.error("❌ Autenticación fallida.")
+                return
+        except Exception as e:
+            st.error("❌ Error durante Device Code Flow.")
+            st.exception(e)
             return
 
     # Si no hay token aún, pedir al usuario que se conecte
@@ -313,77 +327,65 @@ def integrate_ui_and_append(share_url: str, df_to_append: pd.DataFrame):
         st.info("Presiona 'Conectar a Excel Online (Device Code)' para iniciar autenticación.")
         return
 
-    # Listar worksheets
+    # Resto del código original...
     try:
         worksheets = gc.get_workbook_worksheets(share_url)
     except Exception as e:
         st.error("No se pudieron listar las hojas del workbook.")
         st.exception(e)
-        logger.exception("get_workbook_worksheets error:")
         return
 
     if not worksheets:
-        st.warning("No se encontraron worksheets en el archivo (¿URL de sharing válida?).")
+        st.warning("No se encontraron worksheets en el archivo.")
         return
 
     sheet_names = [w.get("name") for w in worksheets]
     sheet_choice = st.selectbox("Selecciona la hoja (worksheet)", options=sheet_names)
 
-    # Listar tablas de la hoja
     try:
         tables = gc.get_worksheet_tables(share_url, sheet_choice)
     except Exception as e:
         st.error("Error listando tablas en la hoja seleccionada.")
         st.exception(e)
-        logger.exception("get_worksheet_tables error:")
         return
 
     table_options = [t.get("name") or t.get("id") for t in tables]
     table_choice = st.selectbox("Selecciona tabla (o crear nueva)", options=["<crear nueva>"] + table_options)
 
-    # Crear tabla nueva si el usuario lo pide
     if table_choice == "<crear nueva>":
         create_header_range = st.text_input("Rango de encabezado a usar (ej. A1:Z1)", value="A1:Z1")
         if st.button("Crear tabla y usarla"):
             try:
                 table_obj = gc.create_table_on_sheet(share_url, sheet_choice, header_range=create_header_range, has_headers=True)
-                st.success("Tabla creada: " + (table_obj.get("name") or table_obj.get("id") or "<sin nombre>"))
-                # refrescar listas
+                st.success("Tabla creada: " + (table_obj.get("name") or "<sin nombre>"))
                 tables = gc.get_worksheet_tables(share_url, sheet_choice)
                 table_options = [t.get("name") or t.get("id") for t in tables]
                 table_choice = table_obj.get("name") or table_obj.get("id")
             except Exception as e:
                 st.error("No se pudo crear la tabla.")
                 st.exception(e)
-                logger.exception("create_table_on_sheet error:")
                 return
 
-    # Preview de datos a enviar
     st.subheader("Preview de datos a enviar (primeras 10 filas)")
     if df_to_append is None or df_to_append.empty:
         st.info("El DataFrame a enviar está vacío.")
     else:
         st.dataframe(df_to_append.head(10), use_container_width=True)
 
-    # Enviar filas (append)
     if st.button("Enviar resultados a Excel (append)"):
         try:
             if table_choice in table_options:
                 selected_table = next((t for t in tables if (t.get("name") == table_choice or t.get("id") == table_choice)), None)
                 table_id = selected_table.get("id")
                 headers = gc.get_table_headers(share_url, table_id)
-                st.info(f"Usando tabla existente: id={table_id}")
             else:
-                # crear tabla usando encabezado del df
                 cols = df_to_append.columns.tolist()
                 last_col = _col_letter(len(cols) - 1)
                 address = f"{sheet_choice}!A1:{last_col}1"
                 table_obj = gc.create_table_on_sheet(share_url, sheet_choice, header_range=address, has_headers=True)
                 table_id = table_obj.get("id")
                 headers = gc.get_table_headers(share_url, table_id) or cols
-                st.success("Tabla creada y seleccionada.")
 
-            # Mapear columnas del df al orden de headers
             df = df_to_append.copy()
             values = []
             for _, row in df.iterrows():
@@ -400,17 +402,14 @@ def integrate_ui_and_append(share_url: str, df_to_append: pd.DataFrame):
                 st.info("No hay filas para enviar.")
                 return
 
-            # Enviar en lotes de 100
             batch_size = 100
             total_added = 0
             for i in range(0, len(values), batch_size):
                 chunk = values[i:i+batch_size]
-                resp = gc.add_rows_to_table(share_url, table_id, chunk)
+                gc.add_rows_to_table(share_url, table_id, chunk)
                 total_added += len(chunk)
                 st.info(f"Se envió lote {i//batch_size + 1}, filas: {len(chunk)}")
             st.success(f"✅ Se añadieron {total_added} filas a la tabla.")
         except Exception as e:
             st.error("Error enviando filas a Excel Online.")
             st.exception(e)
-            logger.exception("integrate_ui_and_append append error:")
-            return
