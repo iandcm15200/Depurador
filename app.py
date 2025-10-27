@@ -4,6 +4,9 @@ from datetime import datetime, timedelta
 import logging
 import os
 
+# Importea la vista UDLA (archivo: depurador_streamlit.py)
+from depurador_streamlit import render_udla
+
 from utils.data_processor import depurar_datos, mapear_columnas
 from utils.excel_manager import actualizar_maestro, cargar_archivo_maestro
 from utils.history_manager import guardar_historial, cargar_historial, mostrar_estadisticas
@@ -56,6 +59,12 @@ def main():
         # Control: Tipo de programa (UDLA / Maestrías / Licenciaturas Anáhuac)
         program_type = st.selectbox("Tipo de programa a procesar", ["UDLA", "Maestrías", "Licenciaturas Anáhuac"])
 
+    # Si el usuario selecciona UDLA, delegamos a la vista especializada que ya funciona
+    if program_type == "UDLA":
+        render_udla()
+        return
+
+    # Para Maestrías y Licenciaturas seguimos con el flujo general
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Carga de Datos", "📊 Dashboard", "🔄 Rezagados", "📈 Historial"])
 
     with tab1:
@@ -95,17 +104,27 @@ def main():
             
             with st.spinner("Procesando..."):
                 try:
-                    # Llamada a depurar_datos: se mantiene el mismo comportamiento para todos los tipos
+                    # Pasamos program_type a depurar_datos para que el procesador haga el comportamiento correcto
                     if filtro_personalizado and rango_dias is not None:
-                        df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
+                        df_depurado = depurar_datos(raw_df,
+                                                    hours=None,
+                                                    days=int(rango_dias),
+                                                    timestamp_referencia=timestamp_carga,
+                                                    start_from_prev_midnight=start_from_prev_midnight,
+                                                    program_type=program_type)
                     else:
-                        df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
+                        df_depurado = depurar_datos(raw_df,
+                                                    hours=int(rango_horas),
+                                                    days=None,
+                                                    timestamp_referencia=timestamp_carga,
+                                                    start_from_prev_midnight=start_from_prev_midnight,
+                                                    program_type=program_type)
                 except TypeError:
-                    # Fallback si la versión de depurar_datos no acepta start_from_prev_midnight
+                    # Fallback si la versión de depurar_datos no acepta start_from_prev_midnight/program_type
                     if filtro_personalizado and rango_dias is not None:
-                        df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga)
+                        df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga, program_type=program_type)
                     else:
-                        df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga)
+                        df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga, program_type=program_type)
                 except Exception as e:
                     st.error(f"❌ Error durante la depuración: {e}")
                     st.exception(e)
@@ -114,7 +133,7 @@ def main():
             if df_depurado is None or df_depurado.empty:
                 st.warning("⚠️ No hay registros después de la depuración / filtro de fechas.")
                 st.info("💡 Sugerencias:")
-                st.write("- Verifica que el CSV tenga la columna **PaidDate**")
+                st.write("- Verifica que el CSV tenga la columna **PaidDate** (si aplica)")
                 st.write("- Verifica que las fechas estén en formato: **DD/MM/YYYY HH:MM**")
                 st.write("- Intenta usar un filtro de más días si el filtro de 48h es muy restrictivo")
                 
@@ -155,8 +174,6 @@ def main():
                 st.write(f"**Total registros:** {filas_depuradas}")
                 
                 try:
-                    # mapear_columnas puede adaptarse en el futuro según program_type si hace falta;
-                    # actualmente se usa la misma estructura para UDLA, Maestrías y Licenciaturas.
                     df_mapeado = mapear_columnas(df_depurado, url_base=url_base_input)
                     
                     # Mostrar DataFrame completo con scroll
@@ -191,7 +208,7 @@ def main():
                 if st.button("🚀 Consolidar en Excel Maestro", type="primary"):
                     with st.spinner("📝 Consolidando en archivo maestro..."):
                         try:
-                            # Si deseas mantener maestros separados por tipo, adapta actualizar_maestro para aceptar program_type.
+                            # Si quieres maestros separados por tipo, adapta actualizar_maestro para aceptar program_type.
                             added, moved_rezagados = actualizar_maestro(df_mapeado, archivo_maestro, periodo)
                         except Exception as e:
                             st.error(f"❌ Error al consolidar: {e}")
