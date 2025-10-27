@@ -201,6 +201,18 @@ def main():
                     st.exception(e)
                     st.stop()
 
+                # --- INTEGRACIÓN: Exportar a Excel Online (OneDrive / SharePoint) ---
+                st.markdown("---")
+                st.subheader("🔗 Exportar a Excel Online (OneDrive / SharePoint)")
+                share_url_input = st.text_input("Pega aquí la sharing URL del archivo Excel (OneDrive/SharePoint)")
+                if share_url_input:
+                    try:
+                        # integrador en utils/excel_online.py
+                        from utils.excel_online import integrate_ui_and_append
+                        integrate_ui_and_append(share_url_input, df_mapeado)
+                    except Exception as e:
+                        st.error(f"Integración Excel Online no disponible: {e}")
+
                 # Botón para consolidar en Excel Maestro
                 st.markdown("---")
                 st.subheader("💾 Consolidar en Excel Maestro")
