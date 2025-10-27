@@ -11,6 +11,14 @@ from utils.data_processor import depurar_datos, mapear_columnas
 from utils.excel_manager import actualizar_maestro, cargar_archivo_maestro
 from utils.history_manager import guardar_historial, cargar_historial, mostrar_estadisticas
 
+# ⭐ NUEVO: Importar funciones para conexión persistente (Anáhuac)
+# y mantener la función original para UDLA
+from utils.excel_integration_ui_persistent import (
+    setup_excel_connection_persistent,
+    send_to_connected_excel,
+    integrate_ui_and_append  # Mantener para UDLA (compatibilidad)
+)
+
 # Logging básico
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -59,6 +67,11 @@ def main():
         # Control: Tipo de programa (UDLA / Maestrías / Licenciaturas Anáhuac)
         program_type = st.selectbox("Tipo de programa a procesar", ["UDLA", "Maestrías", "Licenciaturas Anáhuac"])
 
+        # ⭐ NUEVO: Si es Maestrías o Licenciaturas, mostrar panel de conexión Excel persistente
+        if program_type in ["Maestrías", "Licenciaturas Anáhuac"]:
+            st.markdown("---")
+            setup_excel_connection_persistent()
+
     # Si el usuario selecciona UDLA, delegamos a la vista especializada que ya funciona
     if program_type == "UDLA":
         render_udla()
@@ -66,10 +79,6 @@ def main():
 
     # Para Maestrías y Licenciaturas seguimos con el flujo general
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Carga de Datos", "📊 Dashboard", "🔄 Rezagados", "📈 Historial"])
-
-    # Inicializar session_state clave para la integración por program_type si no existe
-    if f'_excel_online_available_{program_type}' not in st.session_state:
-        st.session_state[f'_excel_online_available_{program_type}'] = False
 
     with tab1:
         st.header(f"Carga y Procesamiento de Archivos CRM — {program_type}")
@@ -155,42 +164,51 @@ def main():
                     'program_type': program_type
                 }
                 guardar_historial(info_depuracion, HISTORY_DIR)
+                st.stop()
+            
+            # Si hay datos depurados
+            filas_depuradas = len(df_depurado)
+            st.success(f"✅ Depuración completada: **{filas_depuradas}** registros")
+            
+            if filas_depuradas == 0:
+                st.warning("⚠️ No hay registros después de aplicar filtros de fecha.")
                 
-            else:
-                filas_depuradas = len(df_depurado)
-                st.success(f"✅ Depuración finalizada: **{filas_depuradas}** registros")
-                
-                # Mostrar estadísticas de depuración
-                st.subheader("📊 Estadísticas de Depuración")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Filas originales", total_filas_originales)
-                with col2:
-                    st.metric("Filas depuradas", filas_depuradas)
-                with col3:
-                    eliminadas = total_filas_originales - filas_depuradas
-                    porcentaje = (eliminadas/total_filas_originales*100) if total_filas_originales > 0 else 0
-                    st.metric("Filas eliminadas", eliminadas, delta=f"-{porcentaje:.1f}%")
-                
-                # MAPEAR Y MOSTRAR DATOS DEPURADOS
-                st.markdown("---")
-                st.subheader("✅ Datos Depurados - Formato Base Documentos Anáhuac")
-                st.write(f"**Total registros:** {filas_depuradas}")
-                
+                info_depuracion = {
+                    'timestamp': timestamp_carga.strftime('%Y-%m-%d %H:%M:%S'),
+                    'archivo': uploaded_file.name,
+                    'filas_originales': total_filas_originales,
+                    'filas_depuradas': 0,
+                    'filas_agregadas': 0,
+                    'rezagados_movidos': 0,
+                    'filtro_horas': rango_horas if rango_dias is None else None,
+                    'filtro_dias': rango_dias,
+                    'periodo': periodo,
+                    'program_type': program_type
+                }
+                guardar_historial(info_depuracion, HISTORY_DIR)
+                st.stop()
+            
+            # Preview de datos depurados
+            st.subheader("📋 Preview Datos Depurados")
+            st.dataframe(df_depurado.head(20), use_container_width=True)
+            
+            # Mapeo para Excel/Maestro
+            st.markdown("---")
+            st.subheader("🗂️ Mapeo de Columnas")
+            
+            with st.spinner("Mapeando columnas..."):
                 try:
-                    df_mapeado = mapear_columnas(df_depurado, url_base=url_base_input)
+                    df_mapeado = mapear_columnas(df_depurado, url_base_input)
+                    st.session_state['last_df_mapeado'] = df_mapeado
                     
-                    # Guardar última depuración en session_state por si se necesita
-                    st.session_state['last_df_mapeado'] = df_mapeado.copy()
-
-                    # Mostrar DataFrame completo con scroll
-                    st.dataframe(df_mapeado, use_container_width=True, height=400)
+                    st.success(f"✅ Datos mapeados: {len(df_mapeado)} registros")
                     
-                    # Botón para descargar CSV depurado
-                    csv_depurado = df_mapeado.to_csv(index=False, encoding='utf-8-sig')
+                    st.write("**Vista previa (primeras 10 filas):**")
+                    st.dataframe(df_mapeado.head(10), use_container_width=True)
                     
-                    col1, col2 = st.columns(2)
+                    col1, col2 = st.columns([1, 2])
                     with col1:
+                        csv_depurado = df_mapeado.to_csv(index=False, encoding='utf-8-sig')
                         filename = f"depurado_{program_type.replace(' ', '_')}_{uploaded_file.name.replace('.csv', '')}_{timestamp_carga.strftime('%Y%m%d_%H%M%S')}.csv"
                         st.download_button(
                             label="📥 Descargar CSV Depurado",
@@ -208,34 +226,30 @@ def main():
                     st.exception(e)
                     st.stop()
 
-                # --- INTEGRACIÓN LOCALIZADA: Exportar a Excel Online (solo en Maestrías/Licenciaturas) ---
+                # ⭐ NUEVO: Exportar a Excel Online con conexión persistente (solo Maestrías/Licenciaturas)
                 st.markdown("---")
-                st.subheader("🔗 Exportar a Excel Online (OneDrive / SharePoint)")
-                st.write("Pega la sharing URL y pulsa 'Mostrar panel de conexión' para autenticar y seleccionar hoja/tabla.")
-                share_url_input = st.text_input("Sharing URL del archivo Excel (OneDrive/SharePoint)", key=f"shareurl_{program_type}")
-
-                # Intentar importar el helper al presionar botón — evitamos importar msal/requests en entorno que no las tenga
-                if st.button("Mostrar panel de conexión / operaciones Excel Online", key=f"btn_show_excel_{program_type}"):
-                    try:
-                        from utils.excel_online import integrate_ui_and_append
-                        st.session_state[f'_excel_online_available_{program_type}'] = True
-                        st.success("Integración Excel Online cargada. Usa el panel que aparece abajo para autenticar y enviar.")
-                    except Exception as e:
-                        st.session_state[f'_excel_online_available_{program_type}'] = False
-                        st.error("No se pudo cargar la integración Excel Online. Revisa la consola y la existencia de msal/requests.")
-                        st.exception(e)
-
-                # Mostrar diagnóstico + panel si disponible
-                if not st.session_state.get(f'_excel_online_available_{program_type}', False):
-                    st.info("Si la integración no está disponible, verás un mensaje con el error cuando pulses 'Mostrar panel de conexión'.")
+                st.subheader("📤 Enviar a Excel Online")
+                
+                # Verificar si hay conexión activa
+                if st.session_state.get("excel_connected", False):
+                    st.info(f"✅ Conectado al libro de Excel - Hoja: **{st.session_state.get('excel_sheet_name', 'N/A')}**")
+                    
+                    # Botón para enviar datos
+                    if st.button("📊 Enviar datos depurados a Excel Online", type="primary", key=f"send_excel_{program_type}"):
+                        with st.spinner("📤 Enviando datos a Excel..."):
+                            success = send_to_connected_excel(
+                                df_to_append=df_mapeado,
+                                show_preview=True
+                            )
+                            
+                            if success:
+                                st.balloons()
+                                st.success("🎉 ¡Datos enviados exitosamente a Excel Online!")
+                            else:
+                                st.error("❌ Hubo un problema al enviar los datos")
                 else:
-                    try:
-                        from utils.excel_online import integrate_ui_and_append
-                        df_payload = df_mapeado if 'df_mapeado' in locals() else (st.session_state.get('last_df_mapeado') or pd.DataFrame())
-                        integrate_ui_and_append(share_url_input, df_payload)
-                    except Exception as e:
-                        st.error("Error ejecutando la integración Excel Online:")
-                        st.exception(e)
+                    st.warning("⚠️ No hay ningún libro de Excel conectado")
+                    st.info("💡 Configura la conexión en la barra lateral (📊 Conexión a Excel Online)")
 
                 # Botón para consolidar en Excel Maestro (local)
                 st.markdown("---")
