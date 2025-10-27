@@ -67,6 +67,10 @@ def main():
     # Para Maestrías y Licenciaturas seguimos con el flujo general
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Carga de Datos", "📊 Dashboard", "🔄 Rezagados", "📈 Historial"])
 
+    # Inicializar session_state clave para la integración por program_type si no existe
+    if f'_excel_online_available_{program_type}' not in st.session_state:
+        st.session_state[f'_excel_online_available_{program_type}'] = False
+
     with tab1:
         st.header(f"Carga y Procesamiento de Archivos CRM — {program_type}")
         
@@ -204,35 +208,36 @@ def main():
                     st.exception(e)
                     st.stop()
 
-                # --- INTEGRACIÓN LOCALIZADA: Exportar a Excel Online (OneDrive / SharePoint)
-                # Esta UI SOLO aparece aquí, dentro de las vistas de Maestrías y Licenciaturas.
+                # --- INTEGRACIÓN LOCALIZADA: Exportar a Excel Online (solo en Maestrías/Licenciaturas) ---
                 st.markdown("---")
                 st.subheader("🔗 Exportar a Excel Online (OneDrive / SharePoint)")
                 st.write("Pega la sharing URL y pulsa 'Mostrar panel de conexión' para autenticar y seleccionar hoja/tabla.")
                 share_url_input = st.text_input("Sharing URL del archivo Excel (OneDrive/SharePoint)", key=f"shareurl_{program_type}")
 
-                # Mostrar botón para cargar el módulo e iniciar panel (evita importar msal si no está instalado)
+                # Intentar importar el helper al presionar botón — evitamos importar msal/requests en entorno que no las tenga
                 if st.button("Mostrar panel de conexión / operaciones Excel Online", key=f"btn_show_excel_{program_type}"):
                     try:
-                        # intentamos importar el helper
                         from utils.excel_online import integrate_ui_and_append
                         st.session_state[f'_excel_online_available_{program_type}'] = True
-                        st.success("Integración Excel Online cargada. Ahora utiliza el panel mostrado más abajo.")
+                        st.success("Integración Excel Online cargada. Usa el panel que aparece abajo para autenticar y enviar.")
                     except Exception as e:
                         st.session_state[f'_excel_online_available_{program_type}'] = False
-                        st.error("No se pudo cargar la integración Excel Online. Verifica que utils/excel_online.py exista y que msal/requests estén instalados.")
+                        st.error("No se pudo cargar la integración Excel Online. Revisa la consola y la existencia de msal/requests.")
                         st.exception(e)
 
-                if st.session_state.get(f'_excel_online_available_{program_type}', False):
+                # Mostrar diagnóstico + panel si disponible
+                if not st.session_state.get(f'_excel_online_available_{program_type}', False):
+                    st.info("Si la integración no está disponible, verás un mensaje con el error cuando pulses 'Mostrar panel de conexión'.")
+                else:
                     try:
                         from utils.excel_online import integrate_ui_and_append
-                        # Llamamos al integrador, pasando el df_mapeado (payload)
-                        integrate_ui_and_append(share_url_input, df_mapeado)
+                        df_payload = df_mapeado if 'df_mapeado' in locals() else (st.session_state.get('last_df_mapeado') or pd.DataFrame())
+                        integrate_ui_and_append(share_url_input, df_payload)
                     except Exception as e:
                         st.error("Error ejecutando la integración Excel Online:")
                         st.exception(e)
 
-                # Botón para consolidar en Excel Maestro
+                # Botón para consolidar en Excel Maestro (local)
                 st.markdown("---")
                 st.subheader("💾 Consolidar en Excel Maestro")
                 
