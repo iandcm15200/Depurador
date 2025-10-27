@@ -74,7 +74,7 @@ def _try_parse_dates(series: pd.Series) -> pd.Series:
     return parsed
 
 
-def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None, start_from_prev_midnight: bool = False) -> pd.DataFrame:
+def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None, start_from_prev_midnight: bool = False, vista: str = "maestrias") -> pd.DataFrame:
     """
     Depura el DataFrame del CSV vwCRMLeads.
     Parámetros:
@@ -82,6 +82,7 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
       - days (int): alternativa para filtrar por días (si se usa).
       - timestamp_referencia (datetime): punto final de la ventana (por defecto ahora).
       - start_from_prev_midnight (bool): si True, ignora `hours` y toma desde la medianoche del día anterior hasta timestamp_referencia.
+      - vista (str): tipo de vista/cliente, p.ej. "maestrias", "udla", "licenciatura". Permite ajustar heurísticas de mapeo.
     """
     try:
         df = df.copy()
@@ -193,7 +194,13 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         df['Email'] = df[email_col].astype(str).str.strip() if email_col and email_col in df.columns else ''
         telefono_col = _find_column(df, ['Telefono Movil', 'TelefonoMovil', 'Telefono', 'telefono movil', 'telefono_movil', 'movil'])
         df['Telefono Movil'] = df[telefono_col].astype(str).str.strip() if telefono_col and telefono_col in df.columns else ''
-        programa_col = _find_column(df, ['Programa', 'programa', 'Plan'])
+
+        # Ajustar candidatos del campo Programa según la vista
+        if isinstance(vista, str) and vista.strip().lower().startswith('licenc'):
+            programa_candidates = ['Programa', 'programa', 'Plan', 'Licenciatura', 'licenciatura', 'Carrera', 'carrera']
+        else:
+            programa_candidates = ['Programa', 'programa', 'Plan']
+        programa_col = _find_column(df, programa_candidates)
         df['Programa'] = df[programa_col].astype(str).str.strip() if programa_col and programa_col in df.columns else ''
 
         # Columnas finales requeridas
@@ -225,9 +232,10 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
         raise
 
 
-def mapear_columnas(df: pd.DataFrame, url_base: str = "https://apmanager.aplatam.com/admin/Ventas/Consulta/Lead/") -> pd.DataFrame:
+def mapear_columnas(df: pd.DataFrame, url_base: str = "https://apmanager.aplatam.com/admin/Ventas/Consulta/Lead/", vista: str = "maestrias") -> pd.DataFrame:
     """
     Asegura que el DataFrame tenga exactamente las columnas finales en el orden esperado.
+    Añade el parámetro vista para permitir ajustes futuros por cliente/tipo.
     """
     try:
         df = df.copy()
