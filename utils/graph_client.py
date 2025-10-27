@@ -21,7 +21,8 @@ class GraphClient:
             raise ValueError("AZURE_CLIENT_ID no configurado (env var o parámetro).")
         self.tenant = tenant or os.environ.get("AZURE_TENANT_ID") or "common"
         self.authority = f"https://login.microsoftonline.com/{self.tenant}"
-        self.scopes = scopes or ["Files.ReadWrite", "offline_access", "User.Read"]
+        # ⭐ CORREGIDO: Eliminado "offline_access" - MSAL lo agrega automáticamente
+        self.scopes = scopes or ["Files.ReadWrite", "User.Read"]
         self.app = msal.PublicClientApplication(self.client_id, authority=self.authority)
         self.access_token = None
 
