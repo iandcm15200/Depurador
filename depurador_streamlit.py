@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import io, csv, unicodedata, html, json
 
-# NOTA: eliminé set_page_config y llamadas top-level para que este módulo
-# pueda importarse desde app.py sin interferir con la configuración principal.
+# NOTA: este módulo expone funciones render_udla() y render_licenciaturas()
+# para que app.py las importe y ejecute condicionalmente.
 
 def normalize_header(s):
     if s is None:
@@ -54,9 +54,9 @@ def merged_header_map(vista_key):
 
 TARGET_COLUMNS = ["Alumno","Correo","Identificación Alumno","Nombre Pago"]
 
-def render_udla():
-    st.title("Depurador - UDLA maestrías")
-    st.markdown("Sube o pega un CSV/TSV con encabezados. Se conservarán solo: Alumno, Correo, Identificación Alumno, Nombre Pago.")
+def _render_generic(title, description, header_map_key=None, download_name="depurado.csv"):
+    st.title(title)
+    st.markdown(description)
     uploaded = st.file_uploader("Subir archivo CSV / TSV", type=["csv","txt"], accept_multiple_files=False)
     text_area = st.text_area("O pega aquí los datos (CSV/TSV) — incluye la fila de encabezados", height=180)
     content_text = None
@@ -79,7 +79,7 @@ def render_udla():
     st.info("Procesando...")
     df = read_text_to_df(content_text)
 
-    header_map = merged_header_map("UDLA")
+    header_map = merged_header_map(header_map_key)
     mapping = {}
     for col in df.columns:
         n = normalize_header(col)
@@ -96,7 +96,7 @@ def render_udla():
             out[c] = ""
     out = out[TARGET_COLUMNS]
 
-    # Reglas UDLA
+    # Reglas por defecto (puedes personalizarlas según vista)
     out["Identificación Alumno"] = out["Identificación Alumno"].astype(str).apply(lambda s: s.replace(" ", "").replace("-", ""))
     out["Correo"] = out["Correo"].astype(str).apply(lambda s: s.strip().lower())
 
@@ -105,11 +105,10 @@ def render_udla():
 
     csv_bytes = out.to_csv(index=False).encode("utf-8")
     tsv_text = out.to_csv(index=False, sep="\t")
-    st.download_button("Descargar CSV", data=csv_bytes, file_name="depurado_udla.csv", mime="text/csv")
+    st.download_button("Descargar CSV", data=csv_bytes, file_name=download_name, mime="text/csv")
 
-    # Para evitar problemas de sintaxis por llaves en f-strings, serializamos el TSV a JSON
-    # y concatenamos la cadena JS sin usar f-strings que interpretan { }.
-    tsv_js = json.dumps(tsv_text)  # produce un literal JS/JSON seguro, con comillas y escapado
+    # serializar TSV de forma segura para JS
+    tsv_js = json.dumps(tsv_text)
 
     copy_html = (
         "<button id=\"copyBtn\">Copiar como TSV (pegar en Excel)</button>\n"
@@ -133,8 +132,23 @@ def render_udla():
 
     st.components.v1.html(copy_html, height=70)
 
+def render_udla():
+    _render_generic(
+        title="Depurador - UDLA maestrías",
+        description="Sube o pega un CSV/TSV con encabezados. Se conservarán solo: Alumno, Correo, Identificación Alumno, Nombre Pago.",
+        header_map_key="UDLA",
+        download_name="depurado_udla.csv"
+    )
+
+def render_licenciaturas_anahuac():
+    # Esta vista procesa igual que la vista Maestrías Anáhuac
+    _render_generic(
+        title="Depurador - Licenciaturas Anáhuac",
+        description="Sube o pega un CSV/TSV para Licenciaturas Anáhuac. Se conservarán solo: Alumno, Correo, Identificación Alumno, Nombre Pago.",
+        header_map_key=None,  # usa COMMON_HEADER_MAP por defecto
+        download_name="depurado_licenciaturas_anahuac.csv"
+    )
+
 # Para probar este módulo de forma independiente:
 if __name__ == "__main__":
-    import streamlit as st_main
-    # Ejecuta render_udla si abres este archivo directamente con streamlit run depurador_streamlit.py
     render_udla()
