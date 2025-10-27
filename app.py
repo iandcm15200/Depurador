@@ -23,37 +23,31 @@ def main():
     st.set_page_config(page_title="Sistema de Carga y Depuración CRM - Maestrías", layout="wide")
 
     # -----------------------
-    # Selector de vistas (Anáhuac / UDLA / Licenciaturas Anáhuac)
+    # Selector de vistas (Anáhuac / UDLA)
     # -----------------------
+    # Nota: depurador_streamlit.py debe exponer una función `render_udla()`
+    # que renderice la UI UDLA sin llamar top-level a st.set_page_config.
     st.sidebar.header("Seleccionar vista")
     vista_global = st.sidebar.radio(
         "Seleccionar vista:",
-        ["Anáhuac (versión actual)", "UDLA maestrías", "Licenciaturas Anáhuac"],
+        ["Anáhuac (versión actual)", "UDLA maestrías"],
         index=0
     )
 
     if vista_global == "UDLA maestrías":
+        # Importar y ejecutar la vista UDLA solo cuando el usuario la seleccione.
+        # Esto evita que se ejecute (o que set_page_config se llame) si no es necesario.
         try:
             import importlib
             depurador_udla = importlib.import_module("depurador_streamlit")
+            # Espera que depurador_streamlit tenga una función render_udla()
             if hasattr(depurador_udla, "render_udla"):
                 depurador_udla.render_udla()
             else:
-                st.error("El módulo depurador_streamlit no expone la función render_udla().")
+                st.error("El módulo depurador_streamlit no expone la función render_udla(). Asegúrate de que depurador_streamlit.py define render_udla().")
         except Exception as e:
             st.error(f"Error cargando la vista UDLA: {e}")
-        st.stop()
-
-    if vista_global == "Licenciaturas Anáhuac":
-        try:
-            import importlib
-            dep = importlib.import_module("depurador_streamlit")
-            if hasattr(dep, "render_licenciaturas_anahuac"):
-                dep.render_licenciaturas_anahuac()
-            else:
-                st.error("El módulo depurador_streamlit no expone la función render_licenciaturas_anahuac().")
-        except Exception as e:
-            st.error(f"Error cargando la vista Licenciaturas Anáhuac: {e}")
+        # Detenemos la ejecución para no renderizar la UI principal (Anáhuac)
         st.stop()
 
     # -----------------------
