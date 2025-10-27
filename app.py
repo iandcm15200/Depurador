@@ -20,7 +20,7 @@ DEFAULT_MAESTRO = os.path.join(DATA_DIR, "conglomerado_maestrias.xlsx")
 URL_BASE = "https://apmanager.aplatam.com/admin/Ventas/Consulta/Lead/"
 
 def main():
-    st.set_page_config(page_title="Sistema de Carga y Depuración CRM - Maestrías / Licenciaturas", layout="wide")
+    st.set_page_config(page_title="Sistema de Carga y Depuración CRM", layout="wide")
     st.title("🏢 Sistema de Carga y Depuración CRM")
     st.markdown("Sube un CSV, depura, consolida y gestiona rezagados automáticamente.")
 
@@ -53,8 +53,8 @@ def main():
         start_from_prev_midnight = st.checkbox("Incluir desde medianoche del día anterior (en lugar de últimas N horas)", value=False)
 
         st.markdown("---")
-        # Nuevo control: Tipo de programa (Maestrías / Licenciaturas Anáhuac)
-        program_type = st.selectbox("Tipo de programa a procesar", ["Maestrías", "Licenciaturas Anáhuac"])
+        # Control: Tipo de programa (UDLA / Maestrías / Licenciaturas Anáhuac)
+        program_type = st.selectbox("Tipo de programa a procesar", ["UDLA", "Maestrías", "Licenciaturas Anáhuac"])
 
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Carga de Datos", "📊 Dashboard", "🔄 Rezagados", "📈 Historial"])
 
@@ -95,7 +95,7 @@ def main():
             
             with st.spinner("Procesando..."):
                 try:
-                    # Llamada a depurar_datos: se mantiene el mismo comportamiento para ambos tipos de programa
+                    # Llamada a depurar_datos: se mantiene el mismo comportamiento para todos los tipos
                     if filtro_personalizado and rango_dias is not None:
                         df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
                     else:
@@ -156,7 +156,7 @@ def main():
                 
                 try:
                     # mapear_columnas puede adaptarse en el futuro según program_type si hace falta;
-                    # actualmente se usa la misma estructura.
+                    # actualmente se usa la misma estructura para UDLA, Maestrías y Licenciaturas.
                     df_mapeado = mapear_columnas(df_depurado, url_base=url_base_input)
                     
                     # Mostrar DataFrame completo con scroll
@@ -191,7 +191,7 @@ def main():
                 if st.button("🚀 Consolidar en Excel Maestro", type="primary"):
                     with st.spinner("📝 Consolidando en archivo maestro..."):
                         try:
-                            # Si quieres mantener maestros separados por tipo, puedes modificar actualizar_maestro para aceptar program_type
+                            # Si deseas mantener maestros separados por tipo, adapta actualizar_maestro para aceptar program_type.
                             added, moved_rezagados = actualizar_maestro(df_mapeado, archivo_maestro, periodo)
                         except Exception as e:
                             st.error(f"❌ Error al consolidar: {e}")
