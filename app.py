@@ -20,40 +20,8 @@ DEFAULT_MAESTRO = os.path.join(DATA_DIR, "conglomerado_maestrias.xlsx")
 URL_BASE = "https://apmanager.aplatam.com/admin/Ventas/Consulta/Lead/"
 
 def main():
-    st.set_page_config(page_title="Sistema de Carga y Depuración CRM - Maestrías", layout="wide")
-
-    # -----------------------
-    # Selector de vistas (Anáhuac / UDLA)
-    # -----------------------
-    # Nota: depurador_streamlit.py debe exponer una función `render_udla()`
-    # que renderice la UI UDLA sin llamar top-level a st.set_page_config.
-    st.sidebar.header("Seleccionar vista")
-    vista_global = st.sidebar.radio(
-        "Seleccionar vista:",
-        ["Anáhuac (versión actual)", "UDLA maestrías"],
-        index=0
-    )
-
-    if vista_global == "UDLA maestrías":
-        # Importar y ejecutar la vista UDLA solo cuando el usuario la seleccione.
-        # Esto evita que se ejecute (o que set_page_config se llame) si no es necesario.
-        try:
-            import importlib
-            depurador_udla = importlib.import_module("depurador_streamlit")
-            # Espera que depurador_streamlit tenga una función render_udla()
-            if hasattr(depurador_udla, "render_udla"):
-                depurador_udla.render_udla()
-            else:
-                st.error("El módulo depurador_streamlit no expone la función render_udla(). Asegúrate de que depurador_streamlit.py define render_udla().")
-        except Exception as e:
-            st.error(f"Error cargando la vista UDLA: {e}")
-        # Detenemos la ejecución para no renderizar la UI principal (Anáhuac)
-        st.stop()
-
-    # -----------------------
-    # Vista Anáhuac (versión actual) - UI original continúa aquí
-    # -----------------------
-    st.title("🏢 Sistema de Carga y Depuración CRM - Maestrías")
+    st.set_page_config(page_title="Sistema de Carga y Depuración CRM - Maestrías / Licenciaturas", layout="wide")
+    st.title("🏢 Sistema de Carga y Depuración CRM")
     st.markdown("Sube un CSV, depura, consolida y gestiona rezagados automáticamente.")
 
     # Sidebar configuración
@@ -84,14 +52,18 @@ def main():
         # Nueva opción: iniciar desde medianoche del día anterior
         start_from_prev_midnight = st.checkbox("Incluir desde medianoche del día anterior (en lugar de últimas N horas)", value=False)
 
+        st.markdown("---")
+        # Nuevo control: Tipo de programa (Maestrías / Licenciaturas Anáhuac)
+        program_type = st.selectbox("Tipo de programa a procesar", ["Maestrías", "Licenciaturas Anáhuac"])
+
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Carga de Datos", "📊 Dashboard", "🔄 Rezagados", "📈 Historial"])
 
     with tab1:
-        st.header("Carga y Procesamiento de Archivos CRM")
+        st.header(f"Carga y Procesamiento de Archivos CRM — {program_type}")
         
         col1, col2 = st.columns([2, 1])
         with col1:
-            uploaded_file = st.file_uploader("Subir archivo CSV del CRM (vwCRMLeads)", type=["csv"])
+            uploaded_file = st.file_uploader(f"Subir archivo CSV del CRM (vwCRMLeads) - {program_type}", type=["csv"])
         with col2:
             st.info(f"📅 Fecha/Hora actual:\n{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
         
@@ -119,14 +91,21 @@ def main():
 
             # Depuración
             st.markdown("---")
-            st.subheader("🔄 Depurando datos...")
+            st.subheader(f"🔄 Depurando datos para {program_type}...")
             
             with st.spinner("Procesando..."):
                 try:
+                    # Llamada a depurar_datos: se mantiene el mismo comportamiento para ambos tipos de programa
                     if filtro_personalizado and rango_dias is not None:
                         df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
                     else:
                         df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga, start_from_prev_midnight=start_from_prev_midnight)
+                except TypeError:
+                    # Fallback si la versión de depurar_datos no acepta start_from_prev_midnight
+                    if filtro_personalizado and rango_dias is not None:
+                        df_depurado = depurar_datos(raw_df, hours=None, days=int(rango_dias), timestamp_referencia=timestamp_carga)
+                    else:
+                        df_depurado = depurar_datos(raw_df, hours=int(rango_horas), days=None, timestamp_referencia=timestamp_carga)
                 except Exception as e:
                     st.error(f"❌ Error durante la depuración: {e}")
                     st.exception(e)
@@ -149,7 +128,8 @@ def main():
                     'rezagados_movidos': 0,
                     'filtro_horas': rango_horas if rango_dias is None else None,
                     'filtro_dias': rango_dias,
-                    'periodo': periodo
+                    'periodo': periodo,
+                    'program_type': program_type
                 }
                 guardar_historial(info_depuracion, HISTORY_DIR)
                 
@@ -175,24 +155,23 @@ def main():
                 st.write(f"**Total registros:** {filas_depuradas}")
                 
                 try:
+                    # mapear_columnas puede adaptarse en el futuro según program_type si hace falta;
+                    # actualmente se usa la misma estructura.
                     df_mapeado = mapear_columnas(df_depurado, url_base=url_base_input)
                     
                     # Mostrar DataFrame completo con scroll
-                    st.dataframe(
-                        df_mapeado,
-                        use_container_width=True,
-                        height=400
-                    )
+                    st.dataframe(df_mapeado, use_container_width=True, height=400)
                     
                     # Botón para descargar CSV depurado
                     csv_depurado = df_mapeado.to_csv(index=False, encoding='utf-8-sig')
                     
                     col1, col2 = st.columns(2)
                     with col1:
+                        filename = f"depurado_{program_type.replace(' ', '_')}_{uploaded_file.name.replace('.csv', '')}_{timestamp_carga.strftime('%Y%m%d_%H%M%S')}.csv"
                         st.download_button(
                             label="📥 Descargar CSV Depurado",
                             data=csv_depurado.encode('utf-8-sig'),
-                            file_name=f"depurado_{uploaded_file.name.replace('.csv', '')}_{timestamp_carga.strftime('%Y%m%d_%H%M%S')}.csv",
+                            file_name=filename,
                             mime="text/csv",
                             help="Descarga el archivo depurado para copiar a Excel"
                         )
@@ -212,6 +191,7 @@ def main():
                 if st.button("🚀 Consolidar en Excel Maestro", type="primary"):
                     with st.spinner("📝 Consolidando en archivo maestro..."):
                         try:
+                            # Si quieres mantener maestros separados por tipo, puedes modificar actualizar_maestro para aceptar program_type
                             added, moved_rezagados = actualizar_maestro(df_mapeado, archivo_maestro, periodo)
                         except Exception as e:
                             st.error(f"❌ Error al consolidar: {e}")
@@ -238,7 +218,8 @@ def main():
                         'rezagados_movidos': moved_rezagados,
                         'filtro_horas': rango_horas if rango_dias is None else None,
                         'filtro_dias': rango_dias,
-                        'periodo': periodo
+                        'periodo': periodo,
+                        'program_type': program_type
                     }
                     guardar_historial(info_depuracion, HISTORY_DIR)
                     st.success("📊 Historial actualizado")
