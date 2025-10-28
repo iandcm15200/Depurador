@@ -8,11 +8,85 @@ from typing import Optional
 import logging
 import msal
 import os
+import requests
 
 logger = logging.getLogger(__name__)
 
 # ⭐ SCOPES CORRECTOS - Sin offline_access (MSAL lo agrega automáticamente)
 CORRECT_SCOPES = ["Files.ReadWrite", "User.Read"]
+
+class GraphClient:
+    """
+    Cliente ligero para Microsoft Graph usado por la app.
+    Provee:
+    - self.app: instancia msal.PublicClientApplication
+    - self.access_token: token de acceso (string)
+    Métodos usados por la app:
+    - search_file_by_name(name) -> list[dict]
+    - get_workbook_worksheets(share_url_or_item) -> list[dict]
+    - get_workbook_worksheets_by_item_id(item_id) -> list[dict]
+    """
+    def __init__(self, client_id: str, scopes: list, authority: Optional[str] = None):
+        self.client_id = client_id
+        self.scopes = scopes
+        tenant = os.environ.get("AZURE_TENANT_ID")
+        # Construir authority si no se pasó
+        if authority:
+            auth = authority
+        else:
+            auth = f"https://login.microsoftonline.com/{tenant}" if tenant else None
+
+        # Crear app MSAL (authority es opcional)
+        if auth:
+            self.app = msal.PublicClientApplication(client_id, authority=auth)
+        else:
+            self.app = msal.PublicClientApplication(client_id)
+
+        self.access_token: Optional[str] = None
+
+    def _headers(self):
+        if not self.access_token:
+            raise RuntimeError("GraphClient: access_token no configurado")
+        return {"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"}
+
+    def search_file_by_name(self, name: str):
+        """
+        Buscar archivos en el drive del usuario por nombre.
+        Devuelve la lista 'value' de la respuesta o [].
+        """
+        GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+        # Usamos el endpoint search sobre root
+        url = f"{GRAPH_BASE}/me/drive/root/search(q='{name}')"
+        r = requests.get(url, headers=self._headers())
+        r.raise_for_status()
+        return r.json().get("value", [])
+
+    def get_workbook_worksheets_by_item_id(self, item_id: str):
+        """
+        Obtener worksheets usando el item id del drive.
+        """
+        GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+        url = f"{GRAPH_BASE}/me/drive/items/{item_id}/workbook/worksheets"
+        r = requests.get(url, headers=self._headers())
+        r.raise_for_status()
+        return r.json().get("value", [])
+
+    def get_workbook_worksheets(self, share_url_or_item: str):
+        """
+        Intentar obtener worksheets desde una URL de compartido (share URL) o desde item id.
+        Primero intenta el endpoint de shares; si falla, intenta tratar el argumento como item_id.
+        """
+        GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+        try:
+            # Intento con shares (encodificar el share URL)
+            share_id = requests.utils.quote(share_url_or_item, safe='')
+            url = f"{GRAPH_BASE}/shares/{share_id}/driveItem/workbook/worksheets"
+            r = requests.get(url, headers=self._headers())
+            r.raise_for_status()
+            return r.json().get("value", [])
+        except Exception:
+            # Fallback: tratar como item id
+            return self.get_workbook_worksheets_by_item_id(share_url_or_item)
 
 def _col_letter(idx: int) -> str:
     """Convierte índice 0->A, 25->Z, 26->AA."""
@@ -111,10 +185,8 @@ def setup_excel_connection_persistent():
                 
                 access_token = token["access_token"]
                 
-                # Importar GraphClient
-                from .graph_client import GraphClient
-                
-                gc = GraphClient(client_id=client_id, scopes=CORRECT_SCOPES)
+                # Crear un GraphClient temporal para buscar archivos
+                gc = GraphClient(client_id=client_id, scopes=CORRECT_SCOPES, authority=authority)
                 gc.access_token = access_token
                 
                 # ⭐ BUSCAR ARCHIVO POR NOMBRE
@@ -213,9 +285,6 @@ def send_to_connected_excel(df_to_append: pd.DataFrame, show_preview: bool = Tru
     
     try:
         with st.spinner(f"📤 Enviando {len(df_to_append)} filas..."):
-            from .graph_client import GraphClient
-            import requests
-            
             gc = GraphClient(client_id=client_id, scopes=CORRECT_SCOPES)
             gc.access_token = access_token
             
