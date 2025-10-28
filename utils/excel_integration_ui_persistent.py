@@ -1,4 +1,3 @@
- url=https://github.com/iandcm15200/Depurador/blob/main/utils/excel_integration_ui_persistent.py
 # helper UI para Streamlit — versión mínima segura
 import streamlit as st
 import pandas as pd
@@ -62,6 +61,7 @@ def setup_excel_connection_persistent():
                 with st.sidebar.expander("📱 Código de autenticación", expanded=True):
                     st.code(flow.get("user_code", ""), language=None)
                     st.markdown(flow.get("message", ""))
+
                 token = app.acquire_token_by_device_flow(flow)
                 if "access_token" not in token:
                     st.sidebar.error("Autenticación fallida.")
