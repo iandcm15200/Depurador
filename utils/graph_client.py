@@ -4,6 +4,7 @@ import json
 import requests
 import msal
 import urllib.parse
+import re
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
@@ -56,13 +57,50 @@ class GraphClient:
         s = share_url.strip()
         enc = base64.urlsafe_b64encode(s.encode("utf-8")).decode("utf-8").rstrip("=")
         return f"u!{enc}"
+    
+    def _parse_sharepoint_url(self, share_url: str):
+        """
+        Intenta extraer información de una URL de SharePoint para usar rutas directas.
+        Retorna tuple (drive_id, item_path) o None si no puede parsear.
+        """
+        # Patrón para URLs tipo: https://org.sharepoint.com/sites/sitio/Shared%20Documents/archivo.xlsx
+        pattern = r'https://([^/]+)/sites/([^/]+)/([^/]+)/(.+)'
+        match = re.match(pattern, share_url)
+        if match:
+            domain, site_name, library, item_path = match.groups()
+            return (site_name, library, item_path)
+        return None
 
     def get_workbook_worksheets(self, share_url: str):
-        share_id = self._share_url_to_share_id(share_url)
-        url = f"{GRAPH_BASE}/shares/{share_id}/driveItem/workbook/worksheets"
-        r = requests.get(url, headers=self._headers())
-        r.raise_for_status()
-        return r.json().get("value", [])
+        """
+        Obtiene las hojas de un workbook de Excel.
+        Intenta primero con share ID, si falla intenta rutas alternativas.
+        """
+        try:
+            share_id = self._share_url_to_share_id(share_url)
+            url = f"{GRAPH_BASE}/shares/{share_id}/driveItem/workbook/worksheets"
+            r = requests.get(url, headers=self._headers())
+            r.raise_for_status()
+            return r.json().get("value", [])
+        except requests.exceptions.HTTPError as e:
+            # Si falla con share ID, intentar método alternativo
+            if e.response.status_code == 400:
+                # Intentar acceso directo por ruta
+                parsed = self._parse_sharepoint_url(share_url)
+                if parsed:
+                    site_name, library, item_path = parsed
+                    # Método alternativo: buscar en el drive del usuario
+                    url = f"{GRAPH_BASE}/me/drive/root/search(q='{item_path}')"
+                    r = requests.get(url, headers=self._headers())
+                    r.raise_for_status()
+                    items = r.json().get("value", [])
+                    if items:
+                        item_id = items[0]["id"]
+                        url = f"{GRAPH_BASE}/me/drive/items/{item_id}/workbook/worksheets"
+                        r = requests.get(url, headers=self._headers())
+                        r.raise_for_status()
+                        return r.json().get("value", [])
+            raise
 
     def get_worksheet_tables(self, share_url: str, sheet_name: str):
         share_id = self._share_url_to_share_id(share_url)
@@ -108,3 +146,22 @@ class GraphClient:
             if t.get("name") == table_name or t.get("displayName") == table_name:
                 return t
         return None
+    
+    def search_file_by_name(self, filename: str):
+        """
+        Busca un archivo por nombre en el OneDrive del usuario autenticado.
+        Retorna la lista de items encontrados.
+        """
+        url = f"{GRAPH_BASE}/me/drive/root/search(q='{filename}')"
+        r = requests.get(url, headers=self._headers())
+        r.raise_for_status()
+        return r.json().get("value", [])
+    
+    def get_workbook_worksheets_by_item_id(self, item_id: str):
+        """
+        Obtiene las hojas de un workbook usando el item_id directo.
+        """
+        url = f"{GRAPH_BASE}/me/drive/items/{item_id}/workbook/worksheets"
+        r = requests.get(url, headers=self._headers())
+        r.raise_for_status()
+        return r.json().get("value", [])
