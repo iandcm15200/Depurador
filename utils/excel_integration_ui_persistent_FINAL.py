@@ -98,7 +98,8 @@ def setup_excel_connection_persistent():
         with st.spinner("Conectando a Microsoft Graph..."):
             try:
                 # ⭐ Crear MSAL app directamente con scopes correctos
-                tenant = os.environ.get("AZURE_TENANT_ID", "common")
+                # Usar tenant específico de la organización
+                tenant = os.environ.get("AZURE_TENANT_ID", "873b9e93-4463-4b67-a3a9-3dee5f35cec2")
                 authority = f"https://login.microsoftonline.com/{tenant}"
                 app = msal.PublicClientApplication(client_id, authority=authority)
                 
@@ -107,7 +108,23 @@ def setup_excel_connection_persistent():
                 
                 if "user_code" not in flow:
                     st.sidebar.error("❌ No se pudo iniciar Device Flow")
+                    
+                    # Mostrar error detallado
+                    if "error" in flow:
+                        st.sidebar.error(f"**Error:** {flow.get('error')}")
+                        st.sidebar.error(f"**Descripción:** {flow.get('error_description', 'Sin descripción')}")
+                    
+                    st.sidebar.warning("**Posibles causas:**")
+                    st.sidebar.write("1. Client ID incorrecto")
+                    st.sidebar.write("2. Permisos de API no configurados en Azure")
+                    st.sidebar.write("3. App no configurada como 'Cliente público'")
+                    
                     logger.error("Device flow initiation failed: %s", flow)
+                    
+                    # Mostrar respuesta completa en expander
+                    with st.sidebar.expander("🔍 Ver respuesta completa de MSAL"):
+                        st.json(flow)
+                    
                     return
                 
                 # Mostrar código de dispositivo en un expander
