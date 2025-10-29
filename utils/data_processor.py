@@ -74,7 +74,7 @@ def _try_parse_dates(series: pd.Series) -> pd.Series:
     return parsed
 
 
-def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None, start_from_prev_midnight: bool = False) -> pd.DataFrame:
+def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp_referencia: datetime = None, start_from_prev_midnight: bool = False, program_type: str = None, **kwargs) -> pd.DataFrame:
     """
     Depura el DataFrame del CSV vwCRMLeads.
     Parámetros:
@@ -82,15 +82,21 @@ def depurar_datos(df: pd.DataFrame, hours: int = 24, days: int = None, timestamp
       - days (int): alternativa para filtrar por días (si se usa).
       - timestamp_referencia (datetime): punto final de la ventana (por defecto ahora).
       - start_from_prev_midnight (bool): si True, ignora `hours` y toma desde la medianoche del día anterior hasta timestamp_referencia.
+      - program_type (str): opcional, aceptado para compatibilidad con llamadas que lo pasen desde app.py.
+      - **kwargs: se aceptan otros argumentos adicionales sin romper la función.
     """
     try:
         df = df.copy()
         if timestamp_referencia is None:
             timestamp_referencia = datetime.now()
 
+        # Log del parámetro program_type para facilitar debugging si se pasa
         logger.info(f"=== INICIANDO DEPURACIÓN ===")
         logger.info(f"Timestamp referencia: {timestamp_referencia}")
         logger.info(f"Filas originales: {len(df)}")
+        logger.info(f"program_type recibido: {program_type}")
+        if kwargs:
+            logger.debug(f"Argumentos adicionales recibidos en **kwargs: {list(kwargs.keys())}")
 
         # Normalizar nombres de columnas (trim)
         df.columns = [str(c).strip() for c in df.columns]
